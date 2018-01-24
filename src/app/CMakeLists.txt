@@ -1,3 +1,9 @@
+#############
+### Boost ###
+#############
+hunter_add_package(Boost COMPONENTS filesystem system)
+find_package(Boost CONFIG REQUIRED filesystem system)  
+
 #################
 ### Libraries ###
 #################
@@ -19,16 +25,11 @@ if(DRISHTI_BUILD_FACE)
   add_subdirectory(facecrop)
 endif()
 
-if(DRISHTI_USE_TEXT_ARCHIVES)
-  if(NOT ANDROID AND NOT IOS)
-    add_subdirectory(pba)
-  endif()
-endif()
-
 add_subdirectory(eye)
-if(DRISHTI_BUILD_ACF)
-  add_subdirectory(acf)
-endif()
+
+# if(DRISHTI_BUILD_ACF)
+#   add_subdirectory(acf)
+# endif()
 
 if(DRISHTI_BUILD_FACE)  
   add_subdirectory(face)
@@ -37,17 +38,13 @@ if(DRISHTI_BUILD_FACE)
   endif()
 endif()
 
-if(DRISHTI_SERIALIZE_WITH_BOOST)
-  # TODO: generalize training model serialization
-  # Regressors currently use boost .pba.z  
-  add_subdirectory(cpr)
-  add_subdirectory(dlib)
-endif()
+add_subdirectory(cpr) # cpb
+add_subdirectory(dlib) # cpb
 
 add_subdirectory(fddb)
 
 # Currently this has a glfw assumption
 # Can use use glfm, sfml or boost for android and iOS
-if(DRISHTI_BUILD_HCI AND DRISHTI_BUILD_OGLES_GPGPU AND (TARGET drishti_gltest))
+if(DRISHTI_BUILD_HCI AND DRISHTI_BUILD_OGLES_GPGPU AND (${DRISHTI_DO_GPU_TESTING}))
   add_subdirectory(hci)
 endif()

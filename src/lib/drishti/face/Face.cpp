@@ -1,4 +1,4 @@
-/*!
+/*! -*-c++-*-
   @file   Face.cpp
   @author David Hirvonen
   @brief  Internal implementation of a utility face model class.
@@ -22,7 +22,8 @@
 
 DRISHTI_FACE_NAMESPACE_BEGIN
 
-FaceModel::FaceModel() {}
+FaceModel::FaceModel() {} //  = default;
+FaceModel::~FaceModel() = default;
 
 float FaceModel::getInterPupillaryDistance() const
 {
@@ -64,27 +65,36 @@ std::vector<cv::Point2f> asSpline(const std::vector<cv::Point2f>& points, int n,
 {
     std::vector<cv::Point2f> spline;
     drishti::core::fitSpline(points, spline, n, closed);
+    if (closed)
+    {
+        spline.push_back(spline.front());
+    }
+
     return spline;
 }
 
 std::vector<FaceModel::ContourVec> FaceModel::getFaceParts(bool fullEyes, bool browClosed) const
 {
     bool useFull = (fullEyes && eyeFullR.has && eyeFullL.has);
-    ContourVec eyeRight_ = useFull ? eyeFullR->getContours() : ContourVec(1, asSpline(eyeRight, 100, true));
-    ContourVec eyeLeft_ = useFull ? eyeFullL->getContours() : ContourVec(1, asSpline(eyeLeft, 100, true));
+    ContourVec eyeRight_ = useFull ? eyeFullR->getContours() : ContourVec(1, asSpline(eyeRight, 64, true));
+    ContourVec eyeLeft_ = useFull ? eyeFullL->getContours() : ContourVec(1, asSpline(eyeLeft, 64, true));
 
-    //ContourVec eyeRight_{ asSpline(eyeRight, 100, true) };
-    //ContourVec eyeLeft_ { asSpline(eyeLeft, 100, true) };
-    std::vector<ContourVec> features{
+    // clang-format off
+    std::vector<ContourVec> features
+    {
         { eyeRight_ },
         { eyeLeft_ },
-        { asSpline(nose, 100, false) },
-        { asSpline(eyebrowRight, 100, browClosed) },
-        { asSpline(eyebrowLeft, 100, browClosed) },
-        { asSpline(mouthOuter, 100, true) },
-        { asSpline(mouthInner, 100, true) }
-
+        { asSpline(nose, 64, false) },
+        { asSpline(eyebrowRight, 64, browClosed) },
+        { asSpline(eyebrowLeft, 64, browClosed) }
     };
+    
+    if(mouthOuter.size() && mouthInner.size())
+    {
+        features.emplace_back( ContourVec{asSpline(mouthOuter, 64, true)} );
+        features.emplace_back( ContourVec{asSpline(mouthInner, 64, true)} );
+    }
+    // clang-format on
 
     if (sideLeft.size() && sideRight.size())
     {
@@ -155,44 +165,11 @@ void FaceModel::draw(cv::Mat& canvas, int width, bool fullEyes, bool allPoints) 
         }
     }
 
-#define SHOW_IRIS_LANDMARKS 0
-#if SHOW_IRIS_LANDMARKS
-
-#define DO_ESTIMATE 0
-#if DO_ESTIMATE
-    std::vector<cv::Point2f> eyePoints(6);
-    eyeFullL->estimateIrisLandmarks(eyePoints[0], eyePoints[1], eyePoints[2]);
-    eyeFullR->estimateIrisLandmarks(eyePoints[3], eyePoints[4], eyePoints[5]);
-    for (auto& p : eyePoints)
-    {
-        cv::circle(canvas, p, 4, { 0, 255, 0 }, -1, 8);
-    }
-#else
-    // TODO: need a "has" field, != 0.f assumption will cause confusion
-    if (eyeFullL->irisCenter.x != 0.f && eyeFullR->irisCenter.x != 0.f)
-    {
-        std::vector<cv::Point2f> iris{
-            eyeFullL->irisCenter,
-            eyeFullL->irisInner,
-            eyeFullL->irisOuter,
-            eyeFullR->irisCenter,
-            eyeFullR->irisOuter,
-            eyeFullR->irisInner
-        };
-        for (const auto& p : iris)
-        {
-            cv::circle(canvas, p, 4, { 0, 255, 0 }, -1, 8);
-        }
-    }
-#endif
-#endif
-
     for (auto& p : things)
     {
         if (p->has)
         {
             cv::circle(canvas, p->value, 4, { 0, 255, 0 }, -1, 8);
-            //cv::imshow("canvas", canvas), cv::waitKey(0);
         }
     }
 }
@@ -213,6 +190,7 @@ cv::Mat getSimilarityMotion(const FaceModel& a, const FaceModel& b)
     return cv::Mat(transformation::estimateSimilarity(ptsA, ptsB));
 }
 
+// Use eyes + nose tip, since this is compatible with both full and inner face landmark sets:
 cv::Mat getAffineMotion(const FaceModel& a, const FaceModel& b)
 {
     CV_Assert(a.eyeLeftCenter.has);
@@ -223,12 +201,13 @@ cv::Mat getAffineMotion(const FaceModel& a, const FaceModel& b)
     CV_Assert(b.eyeLeftCenter.has);
     CV_Assert(b.eyeRightCenter.has);
     CV_Assert(b.noseTip.has);
-    cv::Point2f ptsB[3] = { b.eyeRightCenter.value, b.eyeLeftCenter.value, b.noseTip.value };
+    cv::Point2f ptsB[3] = { b.eyeRightCenter.value, b.eyeLeftCenter.value, b.noseTip };
 
     cv::Mat H = cv::getAffineTransform(&ptsA[0], &ptsB[0]);
     return H;
 }
 
+// Use eyes + nose tip, since this is compatible with both full and inner face landmark sets:
 cv::Mat estimateMotionLeastSquares(const FaceModel& a, const FaceModel& b)
 {
     CV_Assert(a.eyeLeftCenter.has);

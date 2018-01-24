@@ -1,4 +1,4 @@
-/*!
+/*! -*-c++-*-
   @file   ShapeEstimator.h
   @author David Hirvonen
   @brief  Internal declaration of shape estimator API.
@@ -17,26 +17,20 @@
 #include "drishti/ml/drishti_ml.h"
 #include "drishti/core/Logger.h"
 
-#include <opencv2/core/core.hpp>
-
-#include <boost/serialization/base_object.hpp>
-#include <boost/serialization/export.hpp>
+#include <opencv2/core.hpp>
 
 #include <memory>
 #include <vector>
 
 DRISHTI_ML_NAMESPACE_BEGIN
 
-// Specify API
-
-// cv::Point3f where z can represent occlusion
 class ShapeEstimator
 {
 public:
     typedef std::vector<bool> BoolVec;
     typedef std::vector<cv::Point2f> Point2fVec;
 
-    virtual ~ShapeEstimator() {}
+    virtual ~ShapeEstimator();
 
     virtual void setStreamLogger(std::shared_ptr<spdlog::logger>& logger)
     {
@@ -61,15 +55,8 @@ public:
         return 0;
     }
 
-    virtual void setStagesRepetitionFactor(int x){};
-    virtual int getStagesRepetitionFactor() const
-    {
-        return 0; // 0 == not set
-    }
-
     virtual void dump(std::vector<float>& params, bool pca = false) {}
 
-    // Boost serialization:
     template <class Archive>
     void serialize(Archive& ar, const unsigned int version) {}
 
@@ -77,10 +64,5 @@ public:
 };
 
 DRISHTI_ML_NAMESPACE_END
-
-#if DRISHTI_SERIALIZE_WITH_BOOST
-BOOST_SERIALIZATION_ASSUME_ABSTRACT(drishti::ml::ShapeEstimator);
-BOOST_CLASS_EXPORT_KEY(drishti::ml::ShapeEstimator);
-#endif
 
 #endif

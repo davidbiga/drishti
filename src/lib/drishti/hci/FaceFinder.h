@@ -1,4 +1,4 @@
-/*!
+/*! -*-c++-*-
   @file   drishti/hci/FaceFinder.h
   @author David Hirvonen
   @brief  Face detection and tracking class with GPU acceleration.
@@ -14,17 +14,25 @@
 #include "drishti/hci/drishti_hci.h"
 #include "drishti/hci/Scene.hpp"
 #include "drishti/hci/FaceMonitor.h"
-#include "drishti/acf/GPUACF.h"
-#include "drishti/acf/ACF.h" // needed for pyramid
 #include "drishti/face/Face.h"
 #include "drishti/face/FaceDetectorFactory.h"
 #include "drishti/sensor/Sensor.h"
+
+#include <acf/GPUACF.h>
+#include <acf/ACF.h> // needed for pyramid
+
 #include "thread_pool/thread_pool.hpp"
 
 #include <memory>
 
-#define DRISHTI_HCI_FACEFINDER_INTERVAL 0.1
+#define DRISHTI_HCI_FACEFINDER_MIN_DISTANCE 0.1
+#define DRISHTI_HCI_FACEFINDER_MAX_DISTANCE 0.4
+#define DRISHTI_HCI_FACEFINDER_MIN_TRACK_HITS 3
+#define DRISHTI_HCI_FACEFINDER_MAX_TRACK_MISSES 3
+#define DRISHTI_HCI_FACEFINDER_MIN_SEPARATION 0.15f // meters
+#define DRISHTI_HCI_FACEFINDER_INTERVAL 0.1f
 #define DRISHTI_HCI_FACEFINDER_DO_ELLIPSO_POLAR 0
+#define DRISHTI_HCI_FACEFINDER_HISTORY 3
 
 DRISHTI_HCI_NAMESPACE_BEGIN
 
@@ -53,6 +61,8 @@ public:
         std::function<void(double second)> blobExtractionTimeLogger;
         std::function<void(double second)> renderSceneTimeLogger;
 
+        void init();
+
         friend std::ostream& operator<<(std::ostream& stream, const TimerInfo& info);
     };
 
@@ -67,15 +77,33 @@ public:
         bool doLandmarks = true;
         bool doFlow = true;
         bool doBlobs = false;
-        float minDetectionDistance = 0.f;
-        float maxDetectionDistance = 1.f;
+
+        // Detection parameters:
+        bool doSingleFace = false;
+        float minDetectionDistance = DRISHTI_HCI_FACEFINDER_MIN_DISTANCE;
+        float maxDetectionDistance = DRISHTI_HCI_FACEFINDER_MAX_DISTANCE;
         float faceFinderInterval = DRISHTI_HCI_FACEFINDER_INTERVAL;
         float acfCalibration = 0.f;
         float regressorCropScale = 0.f;
 
+        // Detection tracks:
+        std::size_t minTrackHits = DRISHTI_HCI_FACEFINDER_MIN_TRACK_HITS;
+        std::size_t maxTrackMisses = DRISHTI_HCI_FACEFINDER_MAX_TRACK_MISSES;
+        float minFaceSeparation = DRISHTI_HCI_FACEFINDER_MIN_SEPARATION;
+
+        // OpengL parameters:
+        int glVersionMajor = 2;
+        int glVersionMinor = 0; // future use
+        bool usePBO = false;
+        bool doOptimizedPipeline = true;
+
+        // Display parameters:
         bool renderFaces = true;
         bool renderPupils = true;
         bool renderCorners = true;
+        float renderEyesWidthRatio = 0.25f;
+
+        int history = DRISHTI_HCI_FACEFINDER_HISTORY;
     };
 
     FaceFinder(FaceDetectorFactoryPtr& factory, Settings& config, void* glContext = nullptr);
@@ -108,16 +136,25 @@ public:
     void setImageLogger(const ImageLogger& logger);
 
 protected:
+    using ImageViews = std::vector<core::ImageView>;
+    using EyeModelPair = std::array<eye::EyeModel, 2>;
+    using EyeModelPairs = std::vector<EyeModelPair>;
+
+    std::pair<GLuint, ScenePrimitives> runFast(const FrameInput& frame, bool doDetection);
+    std::pair<GLuint, ScenePrimitives> runSimple(const FrameInput& frame, bool doDetection);
+
     bool needsDetection(const TimePoint& ts) const;
 
     void computeGazePoints();
     void updateEyes(GLuint inputTexId, const ScenePrimitives& scene);
 
+    void scaleToFullResolution(std::vector<drishti::face::FaceModel>& faces);
+
     void notifyListeners(const ScenePrimitives& scene, const TimePoint& time, bool isFull);
-    bool hasValidFaceRequest(const ScenePrimitives& scene, const TimePoint& time) const;
 
     virtual void init(const cv::Size& inputSize);
     virtual void initPainter(const cv::Size& inputSizeUp);
+    void initFaceFilters(const cv::Size& inputSizeUp);
     void initACF(const cv::Size& inputSizeUp);
     void initFIFO(const cv::Size& inputSize, std::size_t n);
     void initBlobFilter();
@@ -127,18 +164,19 @@ protected:
     void initTimeLoggers();
     void init2(drishti::face::FaceDetectorFactory& resources);
 
-    void dumpEyes(std::vector<cv::Mat4b>& frames, std::vector<std::array<eye::EyeModel, 2>>& eyes);
-    void dumpFaces(std::vector<cv::Mat4b>& frames);
+    void dumpEyes(ImageViews& frames, EyeModelPairs& eyes, int n = 1, bool getImage = false);
+    void dumpFaces(ImageViews& frames, int n = 1, bool getImage = false);
     int detectOnly(ScenePrimitives& scene, bool doDetection);
     virtual int detect(const FrameInput& frame, ScenePrimitives& scene, bool doDetection);
     virtual GLuint paint(const ScenePrimitives& scene, GLuint inputTexture);
     virtual void preprocess(const FrameInput& frame, ScenePrimitives& scene, bool needsDetection); // compute acf
-    int computeDetectionWidth(const cv::Size& inputSizeUp) const;
 
+    GLuint stabilize(GLuint inputTexId, const cv::Size& inputSizeUp, const drishti::face::FaceModel& face);
+    int computeDetectionWidth(const cv::Size& inputSizeUp) const;
     void computeAcf(const FrameInput& frame, bool doLuv, bool doDetection);
     std::shared_ptr<acf::Detector::Pyramid> createAcfGpu(const FrameInput& frame, bool doDetection);
     std::shared_ptr<acf::Detector::Pyramid> createAcfCpu(const FrameInput& frame, bool doDetection);
-    void fill(drishti::acf::Detector::Pyramid& P);
+    void fill(acf::Detector::Pyramid& P);
 
     struct Impl;
     std::unique_ptr<Impl> impl;

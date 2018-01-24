@@ -1,4 +1,4 @@
-/*!
+/*! -*-c++-*-
   @file   XGBooster.h
   @author David Hirvonen
   @brief  Internal declaration of the XGBoost C++ interface class.
@@ -15,8 +15,6 @@
 #include "drishti/core/Logger.h"
 
 #include <opencv2/core.hpp>
-
-#include <boost/serialization/export.hpp>
 
 #include <memory>
 
@@ -44,6 +42,7 @@ public:
     class Impl;
     XGBooster();
     XGBooster(const Recipe& recipe);
+    ~XGBooster();
     float operator()(const std::vector<float>& features);
     void train(const MatrixType<float>& features, const std::vector<float>& values, const MatrixType<uint8_t>& mask = {});
 
@@ -57,16 +56,11 @@ public:
     void setStreamLogger(std::shared_ptr<spdlog::logger>& logger);
 
 protected:
-    std::shared_ptr<Impl> m_impl;
+    std::unique_ptr<Impl> m_impl;
 
     std::shared_ptr<spdlog::logger> m_streamLogger;
 };
 
 DRISHTI_ML_NAMESPACE_END
-
-#if DRISHTI_SERIALIZE_WITH_BOOST
-BOOST_CLASS_EXPORT_KEY(drishti::ml::XGBooster);
-BOOST_CLASS_EXPORT_KEY(drishti::ml::XGBooster::Impl);
-#endif
 
 #endif // __drishti_ml_XGBooster_h__

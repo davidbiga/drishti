@@ -1,4 +1,4 @@
-/*!
+/*! -*-c++-*-
   @file   FaceIO.h
   @author David Hirvonen
   @brief  Declaration of utilities for insantiating face models.
@@ -23,11 +23,12 @@ struct FaceSpecification
 {
     enum Format
     {
-        HELEN,
-        LFPW
+        kHELEN,
+        kibug68,
+        kibug68_inner
     };
 
-    Format format = HELEN;
+    Format format = kibug68;
 
     using IntVec = std::vector<int>;
 
@@ -49,7 +50,7 @@ struct FaceSpecification
     static FaceSpecification create(Format format);
 };
 
-FaceModel shapeToFace(drishti::core::Shape& shape, FaceSpecification::Format kind = FaceSpecification::HELEN);
+FaceModel shapeToFace(drishti::core::Shape& shape, FaceSpecification::Format kind = FaceSpecification::kibug68);
 
 DRISHTI_FACE_NAMESPACE_END
 

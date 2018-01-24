@@ -13,42 +13,40 @@ include(sugar_files)
 
 sugar_files(DRISHTI_ML_SRCS
   ObjectDetector.cpp
+  ObjectDetectorACF.cpp  
   PCA.cpp
+  PCAArchiveCereal.cpp
+  RTEShapeEstimatorArchiveCereal.cpp  
   RegressionTreeEnsembleShapeEstimator.cpp
   ShapeEstimator.cpp
   XGBooster.cpp
+  XGBoosterIOArchiveCereal.cpp
   )
-
-if(DRISHTI_SERIALIZE_WITH_BOOST)
-  sugar_files(DRISHTI_ML_SRCS
-    PCAArchiveBoost.cpp
-    XGBoosterIOArchiveBoost.cpp    
-    RTEShapeEstimatorArchiveBoost.cpp
-    )
-endif()
-
-if(DRISHTI_SERIALIZE_WITH_CEREAL)
-  sugar_files(DRISHTI_ML_SRCS
-    PCAArchiveCereal.cpp
-    XGBoosterIOArchiveCereal.cpp
-    RTEShapeEstimatorArchiveCereal.cpp
-  )
-endif()
 
 sugar_files(DRISHTI_ML_HDRS_PUBLIC
+  Booster.h
+  BoundingBox.h
   ObjectDetector.h
+  ObjectDetectorACF.h
   PCA.h
   PCAImpl.h
-  RegressionTreeEnsembleShapeEstimator.h
   RTEShapeEstimatorImpl.h
+  RegressionTreeEnsembleShapeEstimator.h
   ShapeEstimator.h
+  XGBooster.h
+  XGBoosterImpl.h  
   drishti_ml.h
   shape_predictor.h
   shape_predictor_archive.h
-  XGBooster.h
-  XGBoosterImpl.h  
-  Booster.h
   )
+
+sugar_files(DRISHTI_ML_UT
+  ut/test-drishti-ml.cpp
+  )
+
+if(NOT DRISHTI_BUILD_MIN_SIZE)
+  sugar_files(DRISHTI_ML_HDRS_PUBLIC shape_predictor_trainer.h)
+endif()
 
 if(DRISHTI_BUILD_DEST)
   sugar_files(DRISHTI_ML_HDRS_PUBLIC RegressionTreeEnsembleShapeEstimatorDEST.h)

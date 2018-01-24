@@ -109,14 +109,28 @@ struct VideoFilterRunnable::Impl
         settings.frameDelay = 1; // 1 frame delay
         settings.minDetectionDistance = manager->getDetectionParameters().m_minDepth;
         settings.maxDetectionDistance = manager->getDetectionParameters().m_maxDepth;
+        settings.faceFinderInterval = manager->getDetectionParameters().m_interval;
+        settings.doSingleFace = manager->getDetectionParameters().m_singleFace;
+        settings.glVersionMajor = manager->getGLVersion().major;
+        settings.glVersionMinor = manager->getGLVersion().minor;
+        settings.usePBO = manager->getUsePBO();
+
+        m_logger = manager->getLogger();
 
         auto* pSettings = manager->getSettings();
         if (pSettings != nullptr)
         {
-            settings.frameDelay = (*pSettings)["frameDelay"].get<int>();
-            settings.doLandmarks = (*pSettings)["doLandmarks"].get<bool>();
-            settings.doFlow = (*pSettings)["doFlow"].get<bool>();
-            settings.doBlobs = (*pSettings)["doBlobs"].get<bool>();
+            settings.acfCalibration = 0.0;
+            // clang-format off
+            try { settings.frameDelay = (*pSettings)["frameDelay"].get<int>(); } catch(...) {}
+            try { settings.doLandmarks = (*pSettings)["doLandmarks"].get<bool>(); } catch(...) {}
+            try { settings.doFlow = (*pSettings)["doFlow"].get<bool>(); } catch(...) {}
+            try { settings.doBlobs = (*pSettings)["doBlobs"].get<bool>(); } catch(...) {}
+            try { settings.acfCalibration = (*pSettings)["cascadeCalibration"].get<float>(); } catch(...) {}
+            try { settings.regressorCropScale = (*pSettings)["regressorCropScale"].get<float>(); } catch(...) {}
+            // clang-format on
+
+            m_logger->info("DJH: settings ################### {}, {}", settings.doFlow, settings.acfCalibration);
         }
 
         drishti::hci::FaceFinder::tryEnablePlatformOptimizations();
@@ -145,6 +159,8 @@ struct VideoFilterRunnable::Impl
             m_detector->setBrightness(value);
         }
     }
+
+    std::shared_ptr<spdlog::logger> m_logger;
 
     std::chrono::high_resolution_clock::time_point m_tic;
 
@@ -240,6 +256,9 @@ bool VideoFilterRunnable::isFrameFormatYUV(const QVideoFrame& frame)
 // Create a texture from the image data.
 GLuint VideoFilterRunnable::createTextureForFrame(QVideoFrame* input)
 {
+    m_pImpl->m_logger->info("VideoFilterRunnable::createTestureForFrame()");
+    m_pImpl->m_logger->info("OpenGL: {}", glGetString(GL_VERSION));
+
     GLuint outTexture = detectFaces(input);
     return outTexture;
 }
@@ -301,7 +320,7 @@ int VideoFilterRunnable::detectFaces(QVideoFrame* input)
     }
 
     // Be sure to active GL_TEXTURE0 for Qt
-    glActiveTexture(GL_TEXTURE0);
+    f->glActiveTexture(GL_TEXTURE0);
 
     return m_outTexture;
 }

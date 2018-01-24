@@ -1,4 +1,4 @@
-/*!
+/*! -*-c++-*-
   @file  FacePainter.cpp
   @author David Hirvonen
   @brief Simple interface to draw faces and other primitives from the scene.
@@ -42,12 +42,11 @@ struct DrawingSpec
 // =====
 
 // clang-format off
-const char *FacePainter::fshaderLetterBoxSrc = OG_TO_STR
-(
+const char *FacePainter::fshaderLetterBoxSrc = 
 #if defined(OGLES_GPGPU_OPENGLES)
-precision mediump float;
+OG_TO_STR(precision mediump float;)
 #endif
-
+OG_TO_STR(
  varying vec2 vTexCoord;
  uniform sampler2D uInputTex;
 
@@ -77,11 +76,11 @@ const char * FacePainter::vshaderColorSrc = OG_TO_STR
 // clang-format on
 
 // clang-format off
-const char * FacePainter::fshaderColorSrc = OG_TO_STR
-(
+const char * FacePainter::fshaderColorSrc =
 #if defined(OGLES_GPGPU_OPENGLES)
- precision highp float;
+OG_TO_STR(precision highp float;)
 #endif
+OG_TO_STR(
  uniform vec3 lineColor;
  varying color;
  void main()
@@ -108,11 +107,11 @@ const char * FacePainter::vshaderColorVaryingSrc = OG_TO_STR
 // clang-format on
 
 // clang-format off
-const char * FacePainter::fshaderColorVaryingSrc = OG_TO_STR
-(
+const char * FacePainter::fshaderColorVaryingSrc = 
 #if defined(OGLES_GPGPU_OPENGLES)
- precision highp float;
+OG_TO_STR(precision highp float;)
 #endif
+OG_TO_STR(
  varying vec3 lineColor;
  void main()
  {
@@ -215,7 +214,7 @@ static void addCross(DrawingSpec& lines, const cv::Point2f& point, const cv::Vec
 void FacePainter::renderDrawings()
 {
     //const std::string tag = DRISHTI_LOCATION_SIMPLE;
-    //drishti::core::ScopeTimeLogger renderLogger = [&](double ts) { m_logger->info() << "TIMING:" << tag << "=" << ts; };
+    //drishti::core::ScopeTimeLogger renderLogger = [&](double ts) { m_logger->info("TIMING: {} = {}", tag, ts) };
 
     DrawingSpec lines(GL_LINES);
 
@@ -397,7 +396,7 @@ void FacePainter::FacePainter::setUniforms()
 int FacePainter::FacePainter::render(int position)
 {
     const std::string tag = DRISHTI_LOCATION_SIMPLE;
-    drishti::core::ScopeTimeLogger renderLogger = [&](double ts) { m_logger->info() << "TIMING:" << tag << "=" << ts; };
+    drishti::core::ScopeTimeLogger renderLogger = [&](double ts) { m_logger->info("TIMING:{}={}", tag, ts); };
 
     OG_LOGINF(getProcName(), "input tex %d, target %d, framebuffer of size %dx%d", texId, texTarget, outFrameW, outFrameH);
 
@@ -528,7 +527,7 @@ drawFlow(const FacePainter::FlowField& flow, const cv::Vec3f& color, DrawingSpec
 void FacePainter::annotateEye(const drishti::eye::EyeWarp& eyeWarp, const cv::Size& size, const EyeAttributes& attributes)
 {
     //const std::string tag = DRISHTI_LOCATION_SIMPLE;
-    //drishti::core::ScopeTimeLogger paintLogger = [&](double ts) { m_logger->info() << "TIMING:" << tag << "=" << ts; };
+    //drishti::core::ScopeTimeLogger paintLogger = [&](double ts) { m_logger->info("TIMING: {} = {}", tag, ts); }
 
     auto contours = eyeWarp.getContours(false); //!m_eyePoints.size());
 
@@ -713,4 +712,62 @@ void FacePainter::filterRenderSetCoordsTex(DisplayTexture& texInfo)
 
     glVertexAttribPointer(shParamATexCoord, OGLES_GPGPU_QUAD_TEXCOORDS_PER_VERTEX, GL_FLOAT, GL_FALSE, 0, &ProcBase::quadTexCoordsStd[0]);
     glEnableVertexAttribArray(shParamATexCoord);
+}
+
+//===========================
+//========= FLOW -===========
+//===========================
+
+void FacePainter::setFlowTexture(GLint texIdx, const ogles_gpgpu::Size2d& size)
+{
+    Size2d flowSize(outFrameW, outFrameW * size.height / size.width);
+    Rect2d flowRoi(0, outFrameH - flowSize.height - 1, flowSize.width, flowSize.height);
+    m_flowInfo = { texIdx, size, flowRoi };
+}
+
+//===========================
+//========= FLASH ===========
+//===========================
+
+void FacePainter::setFlashTexture(GLint texIdx, const ogles_gpgpu::Size2d& size)
+{
+    const int flashWidth = outFrameW / 4;
+    Size2d flashSize(flashWidth, flashWidth * size.height / size.width);
+    Rect2d flashRoi(0, (outFrameH / 2) - (flashSize.height / 2), flashSize.width, flashSize.height);
+    m_flashInfo = { texIdx, size, flashRoi };
+}
+
+//===========================
+//========= IRIS ============
+//===========================
+
+void FacePainter::setIrisTexture(int index, GLint texIdx, const ogles_gpgpu::Size2d& size)
+{
+    int shrink = 3; // vertical shrink for small displays
+    assert(index >= 0 && index <= 1);
+    Size2d irisSize(outFrameW, (outFrameW * m_eyes.m_eyesInfo.size.height / m_eyes.m_eyesInfo.size.width) / shrink);
+    Rect2d irisRoi(0, index * (outFrameH - irisSize.height - 1), irisSize.width, irisSize.height);
+    m_irisInfo[index] = { texIdx, size, irisRoi };
+}
+
+//===========================
+//========= EYES ============
+//===========================
+
+void FacePainter::setEyeTexture(GLint texIdx, const ogles_gpgpu::Size2d& size, const std::array<drishti::eye::EyeWarp, 2>& eyes)
+{
+    // A) This stretches and preserves the aspect ratio across the top of the frame:
+    Rect2d eyesRoi(0, 0, outFrameW, outFrameW * size.height / size.width);
+    
+    if (outFrameW > outFrameH)
+    {
+        // B) Place the eyes in the upper left corner
+        const int width = static_cast<int>(m_eyesWidthRatio * outFrameW + 0.5f);
+        eyesRoi = { 0, 0, width, width * size.height / size.width };
+        eyesRoi.x = 0;
+    }
+    
+    m_eyes.m_eyes = eyes;
+    m_eyes.m_eyesInfo = { texIdx, size, eyesRoi };
+    m_eyes.m_eyesInfo.m_delegate = [&]() { annotateEyes(m_eyes, m_eyeAttributes); };
 }

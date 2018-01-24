@@ -1,4 +1,4 @@
-/*!
+/*! -*-c++-*-
   @file   facecrop.cpp
   @author David Hirvonen
   @brief  Batch processing to parse and synthesize new face images from various databases.
@@ -48,7 +48,7 @@
 
 // clang-format off
 #if defined(DRISHTI_BUILD_EOS)
-#  include "drishti/face/FaceMeshMapperLandmark.h"
+#  include "drishti/face/FaceMeshMapperEOSLandmark.h"
 #endif
 // clang-format on
 
@@ -60,6 +60,7 @@
 #include "landmarks/LFPW.h"
 #include "landmarks/DRISHTI.h"
 #include "landmarks/TWO.h"
+#include "landmarks/DlibXML.h"
 
 #include "FaceSpecification.h"
 #include "FaceJitterer.h"
@@ -79,6 +80,8 @@
 #include <cereal/archives/xml.hpp>
 #include <cereal/types/array.hpp>
 #include <cereal/types/map.hpp>
+
+#include <Eigen/Geometry>
 
 #include "cxxopts.hpp"
 
@@ -139,8 +142,8 @@ std::string get_sha1(void const* buffer, std::size_t byte_count)
 
 struct FaceJittererMean : public FaceJitterer
 {
-    FaceJittererMean(const FACE::Table& table, const JitterParams& params, const FaceSpecification& face)
-        : FaceJitterer(table, params, face)
+    FaceJittererMean(const FACE::Table& table, const FaceSpecification& face, const JitterParams& params)
+        : FaceJitterer(table, face, params)
     {
     }
 
@@ -149,11 +152,17 @@ struct FaceJittererMean : public FaceJitterer
         for (const auto& f : faces)
         {
             mu.updateMean(f);
+            jitteredFaces.push_back(f);
         }
     }
 
+    // Maintain a list of jittered faces
+    std::vector<FaceWithLandmarks> jitteredFaces;
+
     FaceWithLandmarksMean mu;
 };
+
+// -----------------------------------------------
 
 using ImageVec = std::vector<cv::Mat>;
 using FaceJittererMeanPtr = std::unique_ptr<FaceJittererMean>;
@@ -163,7 +172,7 @@ static int saveInpaintedSamples(const FACE::Table& table, const std::string sBac
 static FaceWithLandmarks computeMeanFace(FaceResourceManager& manager);
 static void saveMeanFace(FaceResourceManager& manager, const FaceSpecification& faceSpec, const std::string& sImage, const std::string& sPoints, spdlog::logger& logger);
 static int saveDefaultConfigs(const std::string& sOutput, spdlog::logger& logger);
-static void save(const std::vector<FaceWithLandmarks>& faces, const cv::Rect& roi, const std::string& dir, const std::string& filename, int index);
+static void save(std::vector<FaceWithLandmarks>& faces, const cv::Rect& roi, const std::string& dir, const std::string& filename, int index);
 static void previewFaceWithLandmarks(cv::Mat& image, const std::vector<cv::Point2f>& landmarks);
 static GroundTruth parseInput(const std::string& sInput, const std::string& sFormat, const std::string& sDirectoryIn, const std::string& sExtension);
 static FACE::Table parseRAW(const std::string& sInput);
@@ -171,7 +180,7 @@ static int standardizeFaceData(const FACE::Table& table, const std::string& sOut
 
 #if defined(DRISHTI_BUILD_EOS)
 // Face pose estimation...
-using FaceMeshMapperPtr = std::unique_ptr<drishti::face::FaceMeshMapperLandmark>;
+using FaceMeshMapperPtr = std::unique_ptr<drishti::face::FaceMeshMapperEOSLandmark>;
 using FaceMeshMapperResourceManager = drishti::core::LazyParallelResource<std::thread::id, FaceMeshMapperPtr>;
 static void computePose(FACE::Table& table, const std::string& sModel, const std::string& sMapping, std::shared_ptr<spdlog::logger>& logger);
 #endif // DRISHTI_BUILD_POSE
@@ -197,6 +206,7 @@ int gauze_main(int argc, char* argv[])
     std::string sStandardize;
     std::string sFaceSpec;
     std::string sJitterIn;
+    std::string sLandmarks;
 
 #if defined(DRISHTI_BUILD_EOS)
     std::string sEosModel;
@@ -206,10 +216,18 @@ int gauze_main(int argc, char* argv[])
     int sampleCount = 0;
     int winSize = 48; // min crop width
     int threads = -1;
+
     bool doInpaint = false;
     bool doPreview = false;
     bool doBoilerplate = false;
-    bool doPhotometricJitterOnly = false;
+
+    /*
+     * These two parameters work in combination with the "--jitter" option
+     * to control the cropping mode.
+     */
+
+    bool doPhotometricJitter = false;
+    bool doMirror = false;
 
     cxxopts::Options options("drishti-facecrop", "Command line interface for facecrop object detection.");
 
@@ -225,13 +243,14 @@ int gauze_main(int argc, char* argv[])
         ("b,boilerplate", "Write boilerplate config to output dir", cxxopts::value<bool>(doBoilerplate))
         ("e,extension", "Image filename extensions", cxxopts::value<std::string>(sExtension))
         ("w,window", "Do preview window", cxxopts::value<bool>(doPreview))
-        ("0,zero", "Zero jitter model (photometric jitter only)", cxxopts::value<bool>(doPhotometricJitterOnly))
-
+        ("0,zero", "Zero jitter model (photometric jitter only)", cxxopts::value<bool>(doPhotometricJitter))
+        ("l,landmarks", "Master landmark file (xml format)", cxxopts::value<std::string>(sLandmarks))
+        ("m,mirror", "Perform jittering", cxxopts::value<bool>(doMirror))
+    
 #if defined(DRISHTI_BUILD_EOS)
         ("eos-model", "EOS 3D dephormable model", cxxopts::value<std::string>(sEosModel))
         ("eos-mapping", "EOS Landmark mapping", cxxopts::value<std::string>(sEosMapping))
 #endif
-    
         ("standardize", "Standardize input files to filename + bounding boxes", cxxopts::value<std::string>(sStandardize))
     
         // ### Negative options ###
@@ -260,7 +279,7 @@ int gauze_main(int argc, char* argv[])
     // ### Directory
     if(sPositives.empty() && sNegatives.empty())
     {
-        logger->error() << "Must specify output directory (positives or negatives)";
+        logger->error("Must specify output directory (positives or negatives)");
         return 1;
     }
     
@@ -274,11 +293,25 @@ int gauze_main(int argc, char* argv[])
         }
         else
         {
-            logger->error() << "Specified directory " << sPositives << " does not exist or is not writeable";
+            logger->error("Specified directory {} does not exist or is not writeable", sPositives);
             return 1;
         }
     }
-
+    
+    if (!sLandmarks.empty())
+    {
+        std::ofstream check(sLandmarks);
+        if(check)
+        {
+            remove(sLandmarks.c_str());
+        }
+        else
+        {
+            logger->error("Specified landmark file {} does not exist", sLandmarks);
+            return 1;
+        }
+    }
+    
     // ... negatives ...
     if(!sNegatives.empty())
     {
@@ -289,7 +322,7 @@ int gauze_main(int argc, char* argv[])
         }
         else
         {
-            logger->error() << "Specified directory " << sNegatives << " does not exist or is not writeable";
+            logger->error("Specified directory {} does not exist or is not writeable", sNegatives);
             return 1;
         }
     }
@@ -297,13 +330,53 @@ int gauze_main(int argc, char* argv[])
     // ### Input
     if(sInput.empty())
     {
-        logger->error() << "Must specify input image or list of images";
+        logger->error("Must specify input image or list of images");
         return 1;
     }
     if(!drishti::cli::file::exists(sInput))
     {
-        logger->error() << "Specified input file does not exist or is not readable";
+        logger->error("Specified input file does not exist or is not readable");
         return 1;
+    }
+    
+    //::::::::::::::::::::::::::
+    //::: Face jitter params :::
+    //::::::::::::::::::::::::::
+    JitterParams jitterParams;
+    if(!sJitterIn.empty())
+    {
+        std::ifstream is(sJitterIn);
+        if(is)
+        {
+            cereal::JSONInputArchive ia(is);
+            typedef decltype(ia) Archive;
+            ia(GENERIC_NVP("jitter", jitterParams));
+        }
+    } // else we will be performing straight cropping or mirroring
+    
+    //:::::::::::::::::::::::::::::::::
+    //::: Face normalization params :::
+    //:::::::::::::::::::::::::::::::::
+    FaceSpecification faceSpec;
+    if(sFaceSpec.empty())
+    {
+        logger->error("Error: must provide valid face specification");
+        return -1;
+    }
+    else
+    {
+        std::ifstream is(sFaceSpec);
+        if(is)
+        {
+            cereal::JSONInputArchive ia(is);
+            typedef decltype(ia) Archive;
+            ia(GENERIC_NVP("face", faceSpec));
+        }
+        else
+        {
+            logger->error("Error: unable to read face specification file: {}", sFaceSpec);
+            return -1;
+        }
     }
     
     //:::::::::::::::::::::::::::::::
@@ -314,7 +387,7 @@ int gauze_main(int argc, char* argv[])
     
     if(table.lines.empty())
     {
-        logger->error() << "Error: no images were found, please check input file and (optionally) base directory";
+        logger->error("Error: no images were found, please check input file and (optionally) base directory");
         return -1;
     }
     else
@@ -322,7 +395,7 @@ int gauze_main(int argc, char* argv[])
         // Try simple image read sanity test for user feedback:
         if(cv::imread(table.lines.front().filename).empty())
         {
-            logger->error() << "Error: unable to read input image, please check input file and (optionally) base directory";
+            logger->error("Error: unable to read input image, please check input file and (optionally) base directory");
             return -1;
         }
     }
@@ -357,69 +430,32 @@ int gauze_main(int argc, char* argv[])
     }
     
     // ... ELSE STANDARD POSITIVES AND/OR NEGATIVES ...
-    
-    //::::::::::::::::::::::::::
-    //::: Face jitter params :::
-    //::::::::::::::::::::::::::
-    JitterParams jitterParams;
-    if(!sJitterIn.empty())
-    {
-        std::ifstream is(sJitterIn);
-        if(is)
-        {
-            cereal::JSONInputArchive ia(is);
-            typedef decltype(ia) Archive;
-            ia(GENERIC_NVP("jitter", jitterParams));
-        }
-        else
-        {
-            logger->error() << "Error: unable to read input jitter parameters";
-            return -1;
-        }
-    }
-    
-    //:::::::::::::::::::::::::::::::::
-    //::: Face normalization params :::
-    //:::::::::::::::::::::::::::::::::
-    FaceSpecification faceSpec;
-    if(sFaceSpec.empty())
-    {
-        logger->error() << "Error: must provide valid face specification";
-        return -1;
-    }
-    else
-    {
-        std::ifstream is(sFaceSpec);
-        if(is)
-        {
-            cereal::JSONInputArchive ia(is);
-            typedef decltype(ia) Archive;
-            ia(GENERIC_NVP("face", faceSpec));
-        }
-        else
-        {
-            logger->error() << "Error: unable to read face specification file: " << sFaceSpec;
-            return -1;
-        }
-    }
-    
-    
+   
 #if defined(DRISHTI_BUILD_EOS)
     if(!(sEosModel.empty() || sEosMapping.empty()))
     {
         computePose(table, sEosModel, sEosMapping, logger);
-        auto posePruner = [&](FACE::record &record)
-        {
-            const bool doPrune = (std::abs(record.pose.y) > 40.f) || (std::abs(record.pose.z) > 40.f);
-            if(doPrune)
-            {
-                logger->info() << "prune: " << record.pose;
-            }
-            return doPrune;
-        };
         
-        auto &lines = table.lines;
-        lines.erase(std::remove_if(lines.begin(), lines.end(), posePruner), lines.end());
+        { // Write name + angle:
+            std::string filename;
+            filename += sPositives;
+            filename += "/angles.txt";
+            std::ofstream os(filename);
+            if (os)
+            {
+                logger->info("Writing pose file: {}", filename);
+                for(const auto &r : table.lines)
+                {
+                    os << r.filename << " ";
+                    for(const auto &p : r.points)
+                    {
+                        os << p.x << " " << p.y << " ";
+                    }
+                    os << r.angle << std::endl;
+                }
+            }
+        }
+        return 0;
     }
 #endif
 
@@ -438,8 +474,8 @@ int gauze_main(int argc, char* argv[])
 
     FaceResourceManager manager = [&]()
     {
-        logger->info() << "Create resource...";
-        return drishti::core::make_unique<FaceJittererMean>(table, jitterParams, faceSpec);
+        logger->info("Create resource...");
+        return drishti::core::make_unique<FaceJittererMean>(table, faceSpec, jitterParams);
     };
 
     // ####################
@@ -454,7 +490,7 @@ int gauze_main(int argc, char* argv[])
         assert(jitterer.get());
         
         // Load current image
-        logger->info() << table.lines[i].filename << " = " << repeat[i];
+        logger->info("{} = {}", table.lines[i].filename, repeat[i]);
         
         if(repeat[i] > 0)
         {
@@ -462,19 +498,33 @@ int gauze_main(int argc, char* argv[])
             
             if(!image.empty())
             {
-                std::vector<FaceWithLandmarks> faces { (*jitterer)(image, table.lines[i].points, false, true) };
-                for(int j = 1; j < repeat[i]; j++)
-                {
-                    faces.push_back((*jitterer)(image, table.lines[i].points, !doPhotometricJitterOnly, true));
-                }
-                
-                jitterer->updateMean(faces);
 
+                std::vector<FaceWithLandmarks> faces;
+
+                // Always crop the original
+                faces.push_back((*jitterer)(image, table.lines[i].points, FaceJitterer::kCrop, doPhotometricJitter)); // no mirror
+                if (sJitterIn.empty())
+                {
+                    if (doMirror)
+                    {
+                        faces.push_back((*jitterer)(image, table.lines[i].points, FaceJitterer::kMirror, doPhotometricJitter)); // mirror
+                    }
+                }
+                else
+                {
+                    for(int i = 1; i < repeat[i]; i++)
+                    {
+                        faces.push_back((*jitterer)(image, table.lines[i].points, FaceJitterer::kJitter, doPhotometricJitter)); // no mirror
+                    }
+                }
+ 
                 if(!sPositives.empty())
                 {
                     cv::Rect roi(cv::Point(faceSpec.border, faceSpec.border), faceSpec.size);
                     save(faces, roi, sPositives, table.lines[i].filename, i);
                 }
+                
+                jitterer->updateMean(faces);
                 
 #if defined(DRISHTI_USE_IMSHOW)
                 if(doPreview)
@@ -486,7 +536,9 @@ int gauze_main(int argc, char* argv[])
                     std::vector<cv::Mat> images;
                     for(const auto &f : faces)
                     {
-                        images.push_back(f.image);
+                        cv::Mat chip = f.image.clone();
+                        previewFaceWithLandmarks(chip, f.landmarks); 
+                        images.push_back(chip);
                     }
                     
                     cv::hconcat(images, canvas);
@@ -499,6 +551,8 @@ int gauze_main(int argc, char* argv[])
             }
         }
     };
+
+    //harness({0,static_cast<int>(table.lines.size())});
     
     if(threads == 1 || threads == 0 || doPreview)
     {
@@ -508,7 +562,7 @@ int gauze_main(int argc, char* argv[])
     {
         cv::parallel_for_({0,static_cast<int>(table.lines.size())}, harness, std::max(threads, -1));
     }
-
+    
     saveMeanFace(manager, faceSpec, sPositives + "/mean.png", sPositives + "/mean", *logger);
     
     return 0;
@@ -607,7 +661,6 @@ static GroundTruth parseInput(const std::string &sInput, const std::string &sFor
     return gt;
 }
 
-
 static FACE::Table parseRAW(const std::string &sInput)
 {
     const auto filenames = drishti::cli::expand(sInput);
@@ -660,43 +713,18 @@ static int standardizeFaceData(const FACE::Table &table, const std::string &sOut
 
 #if defined(DRISHTI_BUILD_EOS)
 
+
+//Quaternion q;
+//q.setFromTwoVectors( v0, v1 );
+
 #include <fstream>
 #include <iostream>
-
-// http://stackoverflow.com/a/22926477
-template <typename T>
-inline T ntoh_any(T t)
-{
-    static const unsigned char int_bytes[sizeof(int)] = {0xFF};
-    static const int msb_0xFF = 0xFF << (sizeof(int) - 1) * CHAR_BIT;
-    static bool host_is_big_endian = (*(reinterpret_cast<const int *>(int_bytes)) & msb_0xFF ) != 0;
-    if (host_is_big_endian) { return t; }
-
-    unsigned char * ptr = reinterpret_cast<unsigned char *>(&t);
-    std::reverse(ptr, ptr + sizeof(t) );
-    return t;
-}
-
-static cv::Size read_png_size(const std::string &filename)
-{
-    cv::Size size; // 0
-    std::ifstream in(filename);
-    if(in)
-    {
-        unsigned int width, height;
-        in.seekg(16);
-        in.read((char *)&width, 4);
-        in.read((char *)&height, 4);
-        size = { static_cast<int>(ntoh_any(width)), static_cast<int>(ntoh_any(height)) };        
-    }
-    return size;
-}
 
 static void computePose(FACE::Table &table, const std::string &sModel, const std::string &sMapping, std::shared_ptr<spdlog::logger> &logger)
 {
     FaceMeshMapperResourceManager manager = [&]()
     {
-        return drishti::core::make_unique<drishti::face::FaceMeshMapperLandmark>(sModel, sMapping);
+        return drishti::core::make_unique<drishti::face::FaceMeshMapperEOSLandmark>(sModel, sMapping);
     };
     
     drishti::core::ParallelHomogeneousLambda harness = [&](int i)
@@ -706,7 +734,6 @@ static void computePose(FACE::Table &table, const std::string &sModel, const std
         auto &meshMapper = manager[tid];
         
         auto &record = table.lines[i];
-        record.pose = {180.f, 180.f, 180.f };
         if(record.points.size() == 68)
         {
             cv::Size size;
@@ -720,15 +747,19 @@ static void computePose(FACE::Table &table, const std::string &sModel, const std
                 size = cv::imread(record.filename).size();
             }
             
-            eos::core::Mesh mesh;
-
             cv::Mat dummy;
-            dummy.cols;
-            dummy.rows;
+            dummy.cols = size.width;
+            dummy.rows = size.height;
             auto result = (*meshMapper)(record.points, dummy);
-            record.pose = drishti::face::getRotation(result.rendering_params);
-
-            logger->info() << record.filename << " " << size << " " << record.pose;            
+            
+            const auto &q = result->getQuaternion();
+            record.quaternion = { q[0], q[1], q[2], q[3] };  // Note: q1 == frontal for now
+            Eigen::Quaternion<float> q0(q[0], q[1], q[2], q[3]), q1(0.f, 0.f, 0.f, 1.f), arc = q0 * q1.inverse();
+#if defined(__ANDROID__)
+            record.angle = ::acosf(arc.w()) * 2.f;
+#else
+            record.angle = std::acosf(arc.w()) * 2.f;
+#endif
         }
     };
     
@@ -736,7 +767,7 @@ static void computePose(FACE::Table &table, const std::string &sModel, const std
 }
 #endif 
 
-static int saveLandmarksJson(const std::string &sOutput, const std::array<cv::Point2f, 5> &landmarks, spdlog::logger &logger)
+static int saveLandmarksJson(const std::string &sOutput, const std::vector<cv::Point2f> &landmarks, spdlog::logger &logger)
 {
     // Write default jitter parameters:
     std::ofstream os(sOutput);
@@ -748,7 +779,7 @@ static int saveLandmarksJson(const std::string &sOutput, const std::array<cv::Po
     }
     else
     {
-        logger.error() << "Error: unable to write mean landmarks";
+        logger.error("Error: unable to write mean landmarks");
         return -1;
     }
     return 0;
@@ -766,7 +797,7 @@ static int saveLandmarksXml(const std::string &sOutput, const drishti::face::Fac
     }
     else
     {
-        logger.error() << "Error: unable to write mean landmarks";
+        logger.error("Error: unable to write mean landmarks");
         return -1;
     }
     return 0;
@@ -814,7 +845,7 @@ static int saveDefaultJitter(const std::string &sOutput, spdlog::logger &logger)
     }
     else
     {
-        logger.error() << "Error: unable to write default jitter parameters";
+        logger.error("Error: unable to write default jitter parameters");
         return -1;
     }
     return 0;
@@ -832,7 +863,7 @@ static int saveDefaultFaceSpec(const std::string &sOutput, spdlog::logger &logge
     }
     else
     {
-        logger.error() << "Error: unable to write default face specification parameters";
+        logger.error("Error: unable to write default face specification parameters");
         return -1;
     }
     return 0;
@@ -901,11 +932,10 @@ static void save_bbGtv3(const std::string &sOutput, const std::vector<cv::Rect> 
     }
 }
 
-static void save(const std::vector<FaceWithLandmarks> &faces, const cv::Rect &roi, const std::string &dir, const std::string &filename, int index)
+static void save(std::vector<FaceWithLandmarks> &faces, const cv::Rect &roi, const std::string &dir, const std::string &filename, int index)
 {
     for(int i = 0; i < faces.size(); i++)
     {
-        
         std::stringstream ss;
         ss << std::setfill('0') << std::setw(6) << index << "_" << std::setw(2) << i;
         std::string base = drishti::core::basename(filename);
@@ -913,11 +943,25 @@ static void save(const std::vector<FaceWithLandmarks> &faces, const cv::Rect &ro
         { // save the image file
             std::string sOutput = dir + "/" + ss.str() + "_" + base + ".png";
             cv::imwrite(sOutput, faces[i].image);
+            faces[i].filename = sOutput;
         }
         
         {  // Save bbox file for each face (compatible w/ Piotr's toolbox):
             std::string sOutput = dir + "/" + ss.str() + "_" + base + ".txt";
             save_bbGtv3(sOutput, {roi});
+        }
+
+        { // Save the landmarks in a flat file:
+            std::string sOutput = dir + "/" + ss.str() + "_" + base + ".pts";
+            std::ofstream ofs(sOutput);
+            if(ofs)
+            {
+                for (const auto &p : faces[i].landmarks)
+                {
+                    ofs << p.x << " " << p.y << " ";
+                }
+                ofs << std::endl;
+            }
         }
     }
 }
@@ -929,7 +973,6 @@ static void previewFaceWithLandmarks(cv::Mat &image, const std::vector<cv::Point
         cv::circle(image, p, 2, {0,255,0}, -1, 8);
     }
 }
-
 
 static int saveNegatives(const FACE::Table &table, const std::string &sOutput, int sampleCount, int winSize, int threads, spdlog::logger &logger)
 {
@@ -961,7 +1004,7 @@ static int saveNegatives(const FACE::Table &table, const std::string &sOutput, i
                 const int x = rng.uniform(0, negative.cols-width);
                 const int y = rng.uniform(0, negative.rows-width);
                 
-                logger.info() << "roi:" << x << "," << y << "," << width << "," << width << "(" << winSize << ")";
+                logger.info("roi:{},{},{},{}({})", x, y, width, width, winSize);
                 cv::Mat crop = negative(cv::Rect(x, y, width, width));
                 
                 cv::resize(crop, crop, {winSize, winSize}, 0, 0, cv::INTER_AREA);
@@ -976,7 +1019,6 @@ static int saveNegatives(const FACE::Table &table, const std::string &sOutput, i
     
     return 0;
 }
-
 
 static int saveInpaintedSamples(const FACE::Table &table, const std::string sBackground, const std::string &sOutput, spdlog::logger &logger)
 {
@@ -1006,7 +1048,7 @@ static int saveInpaintedSamples(const FACE::Table &table, const std::string sBac
         cv::Mat image = cv::imread(r.filename, cv::IMREAD_COLOR);
         if(!image.empty())
         {
-            logger.info() << "faceless:" << r.filename;
+            logger.info("faceless:{}", r.filename);
             
             cv::Mat blended;
             auto iter = landmarks.find(r.filename);

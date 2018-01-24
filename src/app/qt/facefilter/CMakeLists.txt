@@ -2,8 +2,8 @@
 # Copyright (c) 2015-2016, David Hirvonen
 # All rights reserved.
 
-hunter_add_package(nlohmann-json)
-find_package(nlohmann-json REQUIRED)
+hunter_add_package(nlohmann_json)
+find_package(nlohmann_json CONFIG REQUIRED)
 
 set(app_name facefilter)
 
@@ -15,6 +15,7 @@ set(CMAKE_INCLUDE_CURRENT_DIR ON) # for main.moc
 
 find_package(Qt5Quick REQUIRED) # Qt5::Quick
 find_package(Qt5Multimedia REQUIRED) # Qt5::QMultimediaDeclarativeModule
+find_package(Qt5Qml REQUIRED) # Qt5::QmlQtQuick2Plugin
 
 configure_file(
   facefilter.json
@@ -27,16 +28,35 @@ configure_file(
   COPYONLY
   )
 
-## Serialization type/extension
-if(DRISHTI_SERIALIZE_WITH_CEREAL)
-  set(model_ext "cpb")
-elseif(DRISHTI_SERIALIZE_WITH_BOOST AND NOT MSVC)
-  set(model_ext "pba.z")
-elseif(DRISHTI_SERIALIZE_WITH_BOOST AND DRISHTI_USE_TEXT_ARCHIVES)
-  set(model_ext "txt")
-endif()
+###############################################
+### Create a JSON index for each model type ###
+###############################################
+set(generated_dir "${CMAKE_CURRENT_BINARY_DIR}/generated")
+set(FACTORY_NAME "drishti_assets.json")
+set(DRISHTI_ASSETS_GENERATED_FACTORY "${generated_dir}/${FACTORY_NAME}")
+
+foreach(model ${DRISHTI_ASSETS_VARS})
+  # Create a variable with just the filename (no directory)
+  set(model_name "${model}_NAME")
+  get_filename_component(${model_name} ${${model}} NAME)
+endforeach()
+
+# Use variables:
+# * DRISHTI_ASSETS_FACE_DETECTOR_NAME
+# * DRISHTI_ASSETS_EYE_MODEL_REGRESSOR_NAME
+# * DRISHTI_ASSETS_FACE_LANDMARK_REGRESSOR_NAME
+# * DRISHTI_ASSETS_FACE_DETECTOR_MEAN_NAME
+configure_file(json.cmake.in "${DRISHTI_ASSETS_GENERATED_FACTORY}" @ONLY)
 
 set(facefilter_qrc "${CMAKE_CURRENT_BINARY_DIR}/generated/facefilter.qrc")
+set(model_ext "cpb")
+
+# Use variables:
+# * DRISHTI_ASSETS_GENERATED_FACTORY
+# * DRISHTI_ASSETS_FACE_DETECTOR
+# * DRISHTI_ASSETS_EYE_MODEL_REGRESSOR
+# * DRISHTI_ASSETS_FACE_LANDMARK_REGRESSOR
+# * DRISHTI_ASSETS_FACE_DETECTOR_MEAN
 configure_file(facefilter.qrc.in "${facefilter_qrc}" @ONLY)
 
 set(
@@ -66,6 +86,9 @@ set(
   QtFaceMonitor.cpp
   QMLCameraManager.h
   QMLCameraManager.cpp
+
+  CameraListener.h
+  CameraListener.cpp
   
   QtStream.h
 
@@ -89,11 +112,7 @@ if(DRISHTI_USE_BEAST)
 endif()
 
 if(IOS)
-  list(APPEND FACE_FILTER_SOURCES
-    QIOSViewController+Fix.h
-    QIOSViewController+Fix.mm    
-    Device.mm    
-    )
+  list(APPEND FACE_FILTER_SOURCES Device.mm)
 endif()
 
 if(ANDROID)
@@ -131,13 +150,11 @@ if(ANDROID)
   message("Path to `adb`: ${ANDROID-SDK_ROOT}/android-sdk/platform-tools/adb")
 
 else()
-  find_package(Qt5Quick REQUIRED) # Qt5::Quick
-  find_package(Qt5Qml REQUIRED) # Qt5::QmlQtQuick2Plugin
 
   # We should load this manually because of cyclic dependencies in Qt
   find_package(Qt5MultimediaWidgets REQUIRED)
 
-  if(IOS)
+  if(IOS OR is_linux OR MSVC)
     set(qt_conf "${CMAKE_CURRENT_LIST_DIR}/qt.conf")
     set(qml_dir "${CMAKE_CURRENT_BINARY_DIR}/qt_qml")
 
@@ -154,6 +171,35 @@ else()
     ${qt_conf}
     ${qml_dir}
     )
+
+  if(is_linux OR MSVC)
+    # Qt resources are not bundled
+    add_custom_command(
+        TARGET ${app_name}
+        PRE_BUILD
+        COMMAND
+            ${CMAKE_COMMAND}
+            -E
+            make_directory
+            $<TARGET_FILE_DIR:${app_name}>
+        COMMAND
+            ${CMAKE_COMMAND}
+            -E
+            copy_directory
+            "${qml_dir}"
+            "$<TARGET_FILE_DIR:${app_name}>/qt_qml"
+        COMMAND
+            ${CMAKE_COMMAND}
+            -E
+            copy
+            "${qt_conf}"
+            $<TARGET_FILE_DIR:${app_name}>
+    )
+  endif()
+
+  if(is_linux)
+    configure_file(env.sh ${CMAKE_CURRENT_BINARY_DIR}/env.sh @ONLY)
+  endif()
 
   set_target_properties(
     ${app_name}
@@ -188,13 +234,45 @@ else()
     find_package(Qt5PrintSupport REQUIRED)
     target_link_libraries(${app_name} Qt5::PrintSupport)
   endif()
+
+  ### Workaround for Linux's linker problems {
+  set(fix_cyclic FALSE)
+  if(APPLE)
+    set(fix_cyclic FALSE)
+  elseif(CMAKE_COMPILER_IS_GNUCXX)
+    # MinGW included
+    set(fix_cyclic TRUE)
+  elseif(NOT UNIX)
+    set(fix_cyclic FALSE)
+  elseif("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
+    # Linux Clang
+    set(fix_cyclic TRUE)
+  endif()
+
+  if(fix_cyclic)
+    string(
+      REPLACE
+      "<LINK_LIBRARIES>"
+      " -Wl,--start-group <LINK_LIBRARIES> -Wl,--end-group "
+      CMAKE_CXX_LINK_EXECUTABLE
+      "${CMAKE_CXX_LINK_EXECUTABLE}"
+      )
+  endif()
+  # }
 endif()
 
 target_link_libraries(${app_name} 
   drishtisdk
   ${OGLES_GPGPU_LIB}
   thread-pool-cpp::thread-pool-cpp
-  nlohmann-json::nlohmann-json)
+  nlohmann_json)
+
+if(DRISHTI_OPENGL_ES3)
+  # Note:
+  # * QT_OPENGL_ES_3: must be set manually for Android
+  # * QT_OPENGL_ES_3 == ON for iOS builds
+  target_compile_definitions(${app_name} PUBLIC QT_OPENGL_ES_3=1 DRISHTI_OPENGL_ES3=1)
+endif()
 
 if(DRISHTI_USE_BEAST)
   target_compile_definitions(${app_name} PUBLIC DRISHTI_USE_BEAST=1)

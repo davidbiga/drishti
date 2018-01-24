@@ -13,38 +13,35 @@ include(sugar_files)
 
 sugar_files(DRISHTI_FACE_SRCS
   Face.cpp
+  FaceArchiveCereal.cpp  
   FaceDetector.cpp
   FaceDetectorAndTracker.cpp
   FaceDetectorAndTrackerImpl.cpp
   FaceDetectorAndTrackerNN.cpp
   FaceDetectorFactory.cpp
   FaceDetectorFactoryCereal.cpp
+  FaceDetectorFactoryJson.cpp  
   FaceIO.cpp
-  FaceMesh.cpp
+  FaceMesh.cpp  
   FaceModelEstimator.cpp
+  FaceTracker.cpp  
   face_util.cpp
   )
 
-if(DRISHTI_SERIALIZE_WITH_BOOST)
-  sugar_files(DRISHTI_FACE_SRCS FaceArchiveBoost.cpp)
-endif()
-
-if(DRISHTI_SERIALIZE_WITH_CEREAL OR DRISHTI_SERIALIZE_MODELS_WITH_CEREAL)
-  sugar_files(DRISHTI_FACE_SRCS FaceArchiveCereal.cpp)
-endif()
-
 sugar_files(DRISHTI_FACE_HDRS_PUBLIC
-  drishti_face.h
   Face.h
-  FaceImpl.h  
   FaceDetector.h
   FaceDetectorAndTracker.h
   FaceDetectorAndTrackerImpl.h
   FaceDetectorAndTrackerNN.h
   FaceDetectorFactory.h
+  FaceDetectorFactoryJson.h  
   FaceIO.h
+  FaceImpl.h  
   FaceMesh.h
   FaceModelEstimator.h
+  FaceTracker.h
+  drishti_face.h
   face_util.h
   )
 
@@ -64,13 +61,20 @@ endif()
 
 if(DRISHTI_BUILD_EOS)
   sugar_files(DRISHTI_FACE_SRCS
-    FaceMeshMapper.cpp
-    FaceMeshMapperLandmark.cpp
-    FaceMeshMapperLandmarkContour.cpp
+    FaceMeshMapperEOS.cpp
+    FaceMeshMapperEOSLandmark.cpp
+    FaceMeshMapperEOSLandmarkContour.cpp
+    FaceMeshMapperFactory.cpp
     )
   sugar_files(DRISHTI_FACE_HDRS_PUBLIC
     FaceMeshMapper.h
-    FaceMeshMapperLandmark.h
-    FaceMeshMapperLandmarkContour.h
+    FaceMeshMapperEOS.h
+    FaceMeshMapperEOSLandmark.h
+    FaceMeshMapperEOSLandmarkContour.h
+    FaceMeshMapperFactory.h
     )
 endif()
+
+sugar_files(DRISHTI_FACE_UT
+  ut/test-drishti-face.cpp
+  )

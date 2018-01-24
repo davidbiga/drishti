@@ -9,11 +9,13 @@
 #include <boost/asio/io_service.hpp>
 #include <boost/asio/signal_set.hpp>
 
+// clang-format off
 #if defined(DRISHTI_USE_IMSHOW)
 #  include <opencv2/highgui.hpp>
 #  include "imshow/imshow.h"
 #  include <iostream>
 #endif // DRISHTI_USE_IMSHOW
+// clang-format on
 
 #include "cxxopts.hpp"
 
@@ -77,11 +79,14 @@ int gauze_main(int argc, char** argv)
     s1.set_option(read_message_max{ 64 * 1024 * 1024 });
     s1.set_option(auto_fragment{ false });
     s1.set_option(pmd);
-    
+
     boost::asio::io_service ios;
-    
+
     int counter = 0;
-    websocket::async_server::streambuf_handler handler = [&](beast::streambuf& db) {
+    
+    // clang-format off
+    websocket::async_server::streambuf_handler handler = [&](beast::streambuf& db)
+    {
         std::stringstream ss;
         ss << sOutput << "/frame_" << std::setw(4) << std::setfill('0') << counter++ << ".png";
 
@@ -100,7 +105,7 @@ int gauze_main(int argc, char** argv)
             }
             os.write(buffer.data(), buffer.size()); // write buffer asyncrhonously
 
-            // push buffer to single threaded display queue
+// push buffer to single threaded display queue
 #if defined(DRISHTI_USE_IMSHOW)
             cv::Mat image = cv::imdecode(buffer, CV_LOAD_IMAGE_COLOR);
             ios.post([=]() {
@@ -109,16 +114,18 @@ int gauze_main(int argc, char** argv)
             });
 #endif
         }
+        // clang-format on
+
         return 0;
     };
-    
+
     s1.add(handler);
-    s1.open(endpoint_type{address_type::from_string(sAddress), port}, ec);
+    s1.open(endpoint_type{ address_type::from_string(sAddress), port }, ec);
 
     boost::asio::signal_set signals(ios, SIGINT, SIGTERM);
     signals.async_wait([&](boost::system::error_code const&, int) {});
     ios.run();
-    
+
     return 0;
 }
 

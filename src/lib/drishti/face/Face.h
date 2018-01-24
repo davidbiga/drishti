@@ -1,4 +1,4 @@
-/*!
+/*! -*-c++-*-
   @file   Face.h
   @author David Hirvonen
   @brief  Internal declaration of a utility face model class.
@@ -32,6 +32,8 @@ struct FaceModel
         : roi(roi)
     {
     }
+
+    ~FaceModel();
 
     float getInterPupillaryDistance() const;
     cv::Point2f getEyeLeftCenter() const;

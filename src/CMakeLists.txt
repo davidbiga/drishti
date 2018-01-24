@@ -18,26 +18,6 @@ set(LIB_TYPE STATIC)
 
 sugar_include(${DRISHTI_3RD_PARTY_DIR})
 
-##########
-### Qt ###
-##########
-
-option(DRISHTI_BUILD_QT "Build with Qt" OFF)
-
-if(DRISHTI_BUILD_QT)
-  hunter_add_package(Qt COMPONENTS qtmultimedia qtsensors qtquickcontrols)
-  find_package(Qt5Widgets REQUIRED)
-  find_package(Qt5Multimedia REQUIRED)
-  find_package(Qt5MultimediaWidgets REQUIRED)
-  find_package(Qt5OpenGL REQUIRED)
-  find_package(Qt5Qml REQUIRED)
-  find_package(Qt5Quick REQUIRED)
-  find_package(Qt5QuickTest REQUIRED)
-  find_package(Qt5QuickWidgets REQUIRED)
-  find_package(Qt5Sensors REQUIRED) # for rotation
-  #find_package(Qt5QuickControls REQUIRED) #  QtQuick.Control
-endif()
-
 ##############
 ### OpenCV ###
 ##############
@@ -54,24 +34,6 @@ message("OpenCV_LIBS = ${OpenCV_LIBS}")
 message("${CMAKE_MODULE_PATH}")
 
 #############
-### Boost ###
-#############
-
-hunter_add_package(Boost COMPONENTS filesystem system serialization iostreams)
-find_package(Boost CONFIG REQUIRED filesystem system serialization iostreams)
-message("Boost_INCLUDE_DIRS =  ${Boost_INCLUDE_DIRS}; Boost_LIBRARIES =  ${Boost_LIBRARIES}")
-set(DRISHTI_SDK_BOOST_LIBS
-  Boost::filesystem
-  Boost::system
-  Boost::serialization
-  Boost::iostreams
-  )
-
-if(DRISHTI_SERIALIZE_WITH_BOOST)
-  list(APPEND DRISHTI_SDK_3RDPARTY_PKG_LIBS ${DRISHTI_SDK_BOOST_LIBS})
-endif()
-
-#############
 ### Beast ### :: optional :: (header only)
 #############
 
@@ -81,6 +43,14 @@ if(DRISHTI_USE_BEAST)
   find_package(Beast CONFIG REQUIRED)
   # !!! Limit use to applicaiton layer + callbacks, don't add to core libraries !!!!
 endif()
+
+###########
+### acf ###
+###########
+
+hunter_add_package(acf)
+find_package(acf CONFIG REQUIRED)
+list(APPEND DRISHTI_SDK_3RDPARTY_PKG_LIBS acf::acf)
 
 ##############
 ### spdlog ###
@@ -142,18 +112,6 @@ if(DRISHTI_BUILD_ACF)
   endif()
 endif()
 
-##################
-### boost::pba ###
-##################
-
-if(DRISHTI_SERIALIZE_WITH_BOOST)
-  hunter_add_package(boost-pba)
-  find_package(boost-pba CONFIG REQUIRED)
-  list(APPEND DRISHTI_SDK_3RDPARTY_PKG_LIBS boost-pba::boost-pba) # Add library
-endif()
-
-# Note: Some CMake commands, such as set_property() can't be called on ALIAS targets.
-
 #######################
 ### thread-pool-cpp ### (header only)
 #######################
@@ -178,8 +136,6 @@ list(APPEND DRISHTI_SDK_3RDPARTY_PKG_LIBS xgboost::xgboost) # Add library
 ### ogles_gpgpu ###
 ###################
 
-option(DRISHTI_BUILD_OGLES_GPGPU "Build with OGLES_GPGPU" ON)
-
 if(DRISHTI_BUILD_OGLES_GPGPU)
   hunter_add_package(ogles_gpgpu)
   find_package(ogles_gpgpu CONFIG REQUIRED)
@@ -203,16 +159,39 @@ hunter_add_package(sse2neon)
 find_package(sse2neon CONFIG REQUIRED)
 list(APPEND DRISHTI_SDK_3RDPARTY_PKG_LIBS sse2neon::sse2neon) # Add library
 
+# We use aglet for an "off screen" OpenGL context.
+# This currently provides 3 options:
+#   * GLFWContext for most desktop systems (can provide Window)
+#   * GLContextIOS
+#   * GLContextAndroid
+# Note: Android emulator supports GPU use
+if(DRISHTI_DO_GPU_TESTING)
+  hunter_add_package(aglet)
+  find_package(aglet CONFIG REQUIRED)
+endif()
+
+#############
+### boost ###
+#############
+
+# Note: Used for boost::fileystem::path() (de)construction
+# TODO: Find a lighterweight alternative for portble path manipulation
+hunter_add_package(Boost COMPONENTS filesystem system)
+find_package(Boost CONFIG REQUIRED system filesystem) # TODO: add upstream to eos/cmake/Config.cmake.in
+list(APPEND DRISHTI_SDK_3RDPARTY_PKG_LIBS Boost::filesystem Boost::system)
+
 ###########
 ### eos ### :: experimental :: (header only)
 ###########
 
 set(EOS_LIB "") # Make EOS_LIB optional
 if(DRISHTI_BUILD_EOS)
+  
   hunter_add_package(eos)
   find_package(eos CONFIG REQUIRED)
-  list(APPEND DRISHTI_SDK_3RDPARTY_PKG_LIBS eos::eos) # Add library
-  set(EOS_LIB eos::eos)
+  set(EOS_LIB eos::eos Boost::filesystem)  
+  list(APPEND DRISHTI_SDK_3RDPARTY_PKG_LIBS ${EOS_LIB}) # Add library
+
 endif()
 
 ############
@@ -237,15 +216,13 @@ if(DRISHTI_USE_IMSHOW)
   list(APPEND DRISHTI_SDK_3RDPARTY_PKG_LIBS imshow::imshow) # Add library
 endif()
 
-# opencv + linux JPEG workaround
-if(is_linux)
-  list(APPEND DRISHTI_SDK_3RDPARTY_PKG_LIBS JPEG::jpeg)
-endif()
-
 set(DRISHTI_SDK_3RDPARTY_LIBS
   ${DRISHTI_SDK_3RDPARTY_SRC_LIBS}
   ${DRISHTI_SDK_3RDPARTY_PKG_LIBS}
   )
+
+include(sugar_include)
+sugar_include(.)
 
 # Add the sub-libraries
 add_subdirectory(lib)
@@ -258,10 +235,12 @@ hunter_add_package(cxxopts)
 find_package(cxxopts CONFIG REQUIRED)
 
 # Include *nix style console apps (some will run on iOS and Android)
-add_subdirectory(app)
+if(DRISHTI_BUILD_EXAMPLES)
+  add_subdirectory(app)
+endif()
 
 # (Optional) build unit tests
 if(DRISHTI_BUILD_TESTS)
   add_subdirectory(tests)
-  add_subdirectory(benchmarks)
+  #add_subdirectory(benchmarks)
 endif()

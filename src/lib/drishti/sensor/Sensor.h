@@ -1,4 +1,4 @@
-/*!
+/*! -*-c++-*-
   @file   Sensor.h
   @author David Hirvonen
 
@@ -52,6 +52,11 @@ public:
     // ### Extrinsic camera parameters:
     struct Extrinsic
     {
+        Extrinsic() {}
+        Extrinsic(const cv::Matx33f& R)
+            : R(R)
+        {
+        }
         cv::Matx33f R;
     };
 

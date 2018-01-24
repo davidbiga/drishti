@@ -1,22 +1,48 @@
 {
     "doLandmarks": true,
-    "doFlow": true,
-    "doBlobs": true,
+    "doFlow": false,
+    "doBlobs": false,
     "frameDelay": 2,
+    "cascadeCalibration": 0.01,
+    "regressorCropScale": 1.25,
 
     "ipAddress": {
-        "host": "192.168.1.5",
+        "host": "192.168.0.6",
         "port": "6000",
-        "active": false
+        "active": false,
+        "frequency": 0.5
     },
 
-    "com.apple.avfoundation.avcapturedevice.built-in_video:1": {
+    "detection": {
+        "minDepth": 0.1,
+        "maxDepth": 0.4,
+        "interval": 0.0666,
+        "singleFace": false,
+        "minTrackHits": 3,
+        "maxTrackMisses": 3,
+        "minSeparation": 0.15
+    },
+
+    "com.apple.avfoundation.avcapturedevice.built-in_video:0": {
         "description": "FaceTime HD Camera (Built-in)[5s]",
 
-        "detectionRange": {
-            "minDepth": 0.1,
-            "maxDepth": 0.5
-        },
+        "sensor": {
+            "intrinsic": {
+                "size": {
+                    "width": 1280,
+                    "height": 720
+                },
+                "principal": {
+                    "x": 640.0,
+                    "y": 360.0
+                },
+                "focal_length_x": 684.0
+            }
+        }
+    },
+    
+    "com.apple.avfoundation.avcapturedevice.built-in_video:1": {
+        "description": "FaceTime HD Camera (Built-in)[5s]",
 
         "sensor": {
             "intrinsic": {
@@ -36,11 +62,6 @@
     "front": {
         "description": "Front-facing camera",
 
-        "detectionRange": {
-            "minDepth": 0.1,
-            "maxDepth": 0.5
-        },
-
         "sensor": {
             "intrinsic": {
                 "size": {
@@ -58,34 +79,6 @@
 
     "0x1a11000005ac8510": {
         "description": "FaceTime HD Camera (Built-in)",
-
-        "detectionRange": {
-            "minDepth": 0.264,
-            "maxDepth": 0.792
-        },
-
-        "sensor": {
-            "intrinsic": {
-                "size": {
-                    "width": 1280,
-                    "height": 720
-                },
-                "principal": {
-                    "x": 640.0,
-                    "y": 360.0
-                },
-                "focal_length_x": 1000.0
-            }
-        }
-    },
-
-    "0x4015000005ac1112": {
-        "description": "FaceTime HD Camera (Built-in) (Thunderbolt)",
-
-        "detectionRange": {
-            "minDepth": 0.264,
-            "maxDepth": 0.792
-        },
 
         "sensor": {
             "intrinsic": {
@@ -105,11 +98,6 @@
     "0xfa12000018ec3399": {
         "description": "Defender C-090",
 
-        "detectionRange": {
-            "minDepth": 0.264,
-            "maxDepth": 0.792
-        },
-
         "sensor": {
             "intrinsic": {
                 "size": {
@@ -121,23 +109,6 @@
                     "y": 240.0
                 },
                 "focal_length_x": 1000.0
-            }
-        }
-    },
-
-    "0xAAAAAAAAAAAAAAAA": {
-        "description": "iPhone 4",
-        "sensor": {
-            "intrinsic": {
-                "size": {
-                    "width": 640,
-                    "height": 852
-                },
-                "principal": {
-                    "x": 320.0,
-                    "y": 426.0
-                },
-                "focal_length_x": 768.0
             }
         }
     }

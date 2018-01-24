@@ -17,6 +17,7 @@ sugar_files(DRISHTI_CORE_SRCS
   arithmetic.cpp
   convert.cpp
   drawing.cpp
+  hungarian.cpp
   padding.cpp
   string_utils.cpp
 )
@@ -25,24 +26,23 @@ sugar_files(DRISHTI_CORE_SRCS
 sugar_files(DRISHTI_CORE_HDRS_PUBLIC
   Field.h
   FixedField.h
+  ImageView.h
   IndentingOStreamBuffer.h
-  Line.h
   LazyParallelResource.h
+  Line.h
   Logger.h
   Parallel.h
   Semaphore.h
   Shape.h
+  ThrowAssert.h
   arithmetic.h
-  boost_serialize_common.h
   convert.h
   drawing.h
   drishti_algorithm.h
   drishti_cereal_pba.h
   drishti_core.h
   drishti_csv.h
-  drishti_cv_boost.h
   drishti_cv_cereal.h    
-  drishti_cvmat_boost.h
   drishti_cvmat_cereal.h  
   drishti_defs.hpp
   drishti_math.h
@@ -50,6 +50,7 @@ sugar_files(DRISHTI_CORE_HDRS_PUBLIC
   drishti_serialize.h
   drishti_stdlib_string.h
   drishti_string_hash.h
+  hungarian.h
   infix_iterator.h
   make_unique.h
   padding.h
@@ -62,3 +63,7 @@ if(DRISHTI_USE_THREAD_POOL_CPP)
   sugar_files(DRISHTI_CORE_HDRS_PUBLIC ThreadPool.h)
   sugar_files(DRISHTI_CORE_SRCS ThreadPool.cpp)  
 endif()
+
+sugar_files(DRISHTI_CORE_UT
+  ut/test-drishti-core.cpp
+  )

@@ -1,4 +1,4 @@
-/*!
+/*! -*-c++-*-
   @file GLCircle.cpp
   @author David Hirvonen (C++ implementation)
   @brief Implementation of ogles_gpgpu shader for rendering circles.
@@ -12,11 +12,11 @@
 
 // clang-format off
 BEGIN_OGLES_GPGPU
-const char * CircleProc::fshaderCircleSrc = OG_TO_STR
-(
+const char * CircleProc::fshaderCircleSrc =
 #if defined(OGLES_GPGPU_OPENGLES)
- precision mediump float;
+OG_TO_STR(precision mediump float;)
 #endif
+OG_TO_STR(
  varying vec2 vTexCoord;
  uniform sampler2D uInputTex;
  uniform vec3 color; 

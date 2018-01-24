@@ -1,4 +1,4 @@
-/*!
+/*! -*-c++-*-
   @file GLPrinter.cpp
   @author David Hirvonen (C++ implementation)
   @brief Implementation of ogles_gpgpu shader for printing.
@@ -13,14 +13,22 @@
 #include "drishti/hci/gpu/VeraFont_16_2048.h"
 #include "drishti/core/make_unique.h" // add for <= c++11
 
+// clang-format off
+#if defined(DRISHTI_OPENGL_ES3)
+#  define DRISHTI_GL_RED GL_RED
+#else
+#  define DRISHTI_GL_RED GL_LUMINANCE
+#endif
+// clang-format on
+
 BEGIN_OGLES_GPGPU
 
 // clang-format off
-const char * GLPrinterShader::vshaderPrinterSrc = OG_TO_STR
-(
+const char * GLPrinterShader::vshaderPrinterSrc = 
 #if defined(OGLES_GPGPU_OPENGLES)
- precision mediump float;
+OG_TO_STR(precision mediump float;)
 #endif
+OG_TO_STR(
  attribute vec4 position;
  varying vec2 texCoords; 
  void main()
@@ -31,12 +39,12 @@ const char * GLPrinterShader::vshaderPrinterSrc = OG_TO_STR
 // clang-format on
 
 // clang-format off
-const char * GLPrinterShader::fshaderPrinterSrc = OG_TO_STR
-(
+const char * GLPrinterShader::fshaderPrinterSrc =
 #if defined(OGLES_GPGPU_OPENGLES)
- precision mediump float;
+OG_TO_STR(precision mediump float;)
 #endif
- varying vec2 texCoords;
+OG_TO_STR(
+varying vec2 texCoords;
  uniform sampler2D tex;
  void main()
  {
@@ -60,7 +68,7 @@ GLPrinterShader::GLPrinterShader()
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, font.tex_width, font.tex_height, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, font.tex_data);
+    glTexImage2D(GL_TEXTURE_2D, 0, DRISHTI_GL_RED, font.tex_width, font.tex_height, 0, DRISHTI_GL_RED, GL_UNSIGNED_BYTE, font.tex_data);
     glBindTexture(GL_TEXTURE_2D, 0);
     Tools::checkGLErr(getProcName(), "texture init");
 

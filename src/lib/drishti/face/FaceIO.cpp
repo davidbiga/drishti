@@ -1,4 +1,4 @@
-/*!
+/*! -*-c++-*-
   @file   FaceIO.cpp
   @author David Hirvonen
   @brief  Implementation of utilities for insantiating face models.
@@ -37,7 +37,6 @@ static cv::Point2f maxPointX(std::vector<cv::Point2f>& points)
 static void fill(FaceModel& face)
 {
     // Estimate centers for normalization:
-    // TODO: use weighted mean for HELEN nose contour
     face.eyeRightCenter = drishti::core::centroid(face.eyeRight);
     face.eyeLeftCenter = drishti::core::centroid(face.eyeLeft);
     face.noseTip = drishti::core::centroid(face.nose);
@@ -80,15 +79,25 @@ static void makeHELEN(FaceSpecification& spec)
 //table.nose = { 27,28,29,30,31,32,33,34,35 };
 //table.mouth = { 48,49,50,51,52,53,54,55,56,57,58,59 };
 
-static void makeLFPW(FaceSpecification& spec)
+static void makeibug68(FaceSpecification& spec)
 {
     spec.eyeR = iota({ 36, 41 });
     spec.eyeL = iota({ 42, 47 });
-    spec.nose = iota({ 31, 35 }); // {27, 35} );
+    spec.nose = iota({ 31, 35 });
     spec.browR = iota({ 17, 21 });
     spec.browL = iota({ 22, 26 });
     spec.mouthOuter = iota({ 48, 58 });
     spec.mouthInner = iota({ 60, 67 });
+}
+
+static void makeibug68_inner(FaceSpecification& spec)
+{
+    static const int start = 17;
+    spec.eyeR = iota({ 36 - start, 41 - start });
+    spec.eyeL = iota({ 42 - start, 47 - start });
+    spec.nose = iota({ 31 - start, 35 - start });
+    spec.browR = iota({ 17 - start, 21 - start });
+    spec.browL = iota({ 22 - start, 26 - start });
 }
 
 FaceSpecification FaceSpecification::create(Format format)
@@ -96,11 +105,14 @@ FaceSpecification FaceSpecification::create(Format format)
     FaceSpecification spec;
     switch (format)
     {
-        case HELEN:
+        case kHELEN:
             makeHELEN(spec);
             break;
-        case LFPW:
-            makeLFPW(spec);
+        case kibug68:
+            makeibug68(spec);
+            break;
+        case kibug68_inner:
+            makeibug68_inner(spec);
             break;
     }
     return spec;
@@ -140,21 +152,17 @@ FaceModel shapeToFace(drishti::core::Shape& shape, const FaceSpecification& spec
                 {
                     const auto& p = points[index];
                     o.second->push_back(p);
-                    //cv::circle(canvas, p, 2, {0,255,0}, -1, 8);
                 }
             }
             total += o.first->size();
         }
     }
 
-    //cv::imshow("canvas", canvas), cv::waitKey(0);
-
     fill(face);
 
     return face;
 }
 
-// HELEN
 FaceModel shapeToFace(drishti::core::Shape& shape, FaceSpecification::Format kind)
 {
     auto points = shape.getPoints();
@@ -165,7 +173,7 @@ FaceModel shapeToFace(drishti::core::Shape& shape, FaceSpecification::Format kin
 
     // TODO: review relative
     FaceSpecification spec = FaceSpecification::create(kind);
-    return shapeToFace(shape, spec, (kind == FaceSpecification::HELEN));
+    return shapeToFace(shape, spec, false); //(kind == FaceSpecification::kHELEN));
 }
 
 DRISHTI_FACE_NAMESPACE_END

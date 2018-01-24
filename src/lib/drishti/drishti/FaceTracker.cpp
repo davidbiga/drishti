@@ -11,6 +11,7 @@
 #include "drishti/FaceTracker.hpp"
 #include "drishti/ContextImpl.h"
 #include "drishti/FaceMonitorAdapter.h"
+#include "drishti/SensorImpl.h"
 
 #include "drishti/face/Face.h"
 #include "drishti/hci/FaceFinder.h"
@@ -34,9 +35,8 @@ static ogles_gpgpu::FrameInput convert(const VideoFrame& frame);
  * Impl
  */
 
-class FaceTracker::Impl
+struct FaceTracker::Impl
 {
-public:
     using Settings = drishti::hci::FaceFinder::Settings;
 
     /*
@@ -46,7 +46,7 @@ public:
     Impl(Context* manager, FaceTracker::Resources& resources)
     {
         Settings settings;
-        settings.sensor = manager->get()->getSensor();
+        settings.sensor = manager->get()->sensor;
 
         if (resources.logger.empty())
         {
@@ -62,20 +62,28 @@ public:
         settings.outputOrientation = 0;
         settings.frameDelay = 1;
         settings.doLandmarks = true;
-        settings.doFlow = true;
+        settings.doFlow = false;
         settings.doBlobs = false;
+        settings.doSingleFace = manager->getDoSingleFace();
         settings.minDetectionDistance = manager->getMinDetectionDistance();
         settings.maxDetectionDistance = manager->getMaxDetectionDistance();
+        settings.faceFinderInterval = manager->getFaceFinderInterval();
+        settings.acfCalibration = manager->getAcfCalibration();
+        settings.regressorCropScale = manager->getRegressorCropScale();
+        settings.minTrackHits = manager->getMinTrackHits();
+        settings.maxTrackMisses = manager->getMaxTrackMisses();
+        settings.minFaceSeparation = manager->getMinFaceSeparation();
+        settings.doOptimizedPipeline = manager->getDoOptimizedPipeline();
 
         auto stream = std::make_shared<drishti::face::FaceDetectorFactoryStream>();
         stream->iEyeRegressor = resources.sEyeRegressor;
         stream->iFaceDetector = resources.sFaceDetector;
-        stream->iFaceRegressors = resources.sFaceRegressors;
+        stream->iFaceRegressor = resources.sFaceRegressor;
         stream->iFaceDetectorMean = resources.sFaceModel;
 
         std::shared_ptr<drishti::face::FaceDetectorFactory> factory = stream;
 
-        m_faceFinder = drishti::hci::FaceFinder::create(factory, settings, manager->get()->getGlContext());
+        m_faceFinder = drishti::hci::FaceFinder::create(factory, settings, manager->get()->glContext);
     }
 
     int operator()(const VideoFrame& frame)
@@ -90,7 +98,6 @@ public:
         m_callbacks.emplace_back(callback);
     }
 
-protected:
     std::vector<std::shared_ptr<FaceMonitorAdapter>> m_callbacks;
 
     std::unique_ptr<drishti::hci::FaceFinder> m_faceFinder;
@@ -138,13 +145,16 @@ void FaceTracker::add(drishti_face_tracker_t& table)
 
 static ogles_gpgpu::FrameInput convert(const VideoFrame& frame)
 {
-    ogles_gpgpu::FrameInput input{
+    // clang-format off
+    ogles_gpgpu::FrameInput input
+    {
         { frame.size[0], frame.size[1] },
         frame.pixelBuffer,
         frame.useRawPixels,
         frame.inputTexture,
         frame.textureFormat
     };
+    // clang-format on
 
     return input;
 }

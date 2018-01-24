@@ -1,4 +1,4 @@
-/*!
+/*! -*-c++-*-
   @file   FaceDetector.cpp
   @author David Hirvonen
   @brief  Internal implementation of a face trained object detector.
@@ -9,34 +9,27 @@
 */
 
 #include "drishti/core/drishti_core.h"
+#include "drishti/core/make_unique.h"
 #include "drishti/core/timing.h"
 #include "drishti/core/Parallel.h"
 #include "drishti/face/FaceDetector.h"
 #include "drishti/face/FaceIO.h"
 #include "drishti/geometry/Primitives.h"
-#include "drishti/acf/ACF.h" // ACF detection
 #include "drishti/ml/ShapeEstimator.h"
+#include "drishti/ml/ObjectDetector.h"
 #include "drishti/ml/RegressionTreeEnsembleShapeEstimator.h"
 #include "drishti/face/Face.h"
 #include "drishti/eye/EyeModelEstimator.h"
 #include "drishti/geometry/Rectangle.h"
+#include "drishti/geometry/motion.h"
 
-// clang-format off
-#if DRISHTI_SERIALIZE_WITH_BOOST
-#  include "drishti/core/boost_serialize_common.h" // (optional)
-#endif
-// clang-format on
+#include <acf/ACF.h> // ACF detection
 
 #include <stdio.h>
 
-#define DRISHTI_FACE_DETECTOR_PREVIEW_DETECTIONS 0
 #define DRISHTI_FACE_DETECTOR_DO_SIMILARITY_MOTION 1
 
 DRISHTI_FACE_NAMESPACE_BEGIN
-
-#if DRISHTI_FACE_DETECTOR_PREVIEW_DETECTIONS
-static void previewDetections(const MatP& I, std::vector<dsdkc::Shape>& shapes);
-#endif
 
 using drishti::geometry::operator*;
 
@@ -57,14 +50,12 @@ public:
         create(resources);
     }
 
+    ~Impl() = default;
+
     void create(FaceDetectorFactory& resources)
     {
         m_detector = resources.getFaceDetector();
-        m_regressor = resources.getInnerFaceEstimator();
-        if (resources.sFaceRegressors.size() > 1)
-        {
-            m_regressor2 = resources.getOuterFaceEstimator();
-        }
+        m_regressor = resources.getFaceEstimator();
         m_eyeRegressor.resize(2);
         for (int i = 0; i < 2; i++)
         {
@@ -88,12 +79,15 @@ public:
     template <typename ImageType>
     void detect(const ImageType& I, std::vector<dsdkc::Shape>& shapes)
     {
-        drishti::core::ScopeTimeLogger scopeTimeLogger = [this](double elapsed) {
+        // clang-format off
+        drishti::core::ScopeTimeLogger scopeTimeLogger = [this](double elapsed)
+        {
             if (m_detectionTimeLogger)
             {
                 m_detectionTimeLogger(elapsed);
             }
         };
+        // clang-format on
 
         // Detect objects:
         std::vector<double> scores;
@@ -126,31 +120,42 @@ public:
 
         if (m_eyeRegressor.size() && m_eyeRegressor[0] && m_eyeRegressor[1] && m_doEyeRefinement && faces.size())
         {
-            DRISHTI_EYE::EyeModel eyeR, eyeL;
-            segmentEyes(Ib.Ib, faces[0], eyeR, eyeL);
-            if (eyeR.eyelids.size())
+            for (auto& f : faces)
             {
-                faces[0].eyeFullR = eyeR;
-                faces[0].eyeRightCenter = core::centroid(eyeR.eyelids);
-            }
-            if (eyeL.eyelids.size())
-            {
-                faces[0].eyeFullL = eyeL;
-                faces[0].eyeLeftCenter = core::centroid(eyeL.eyelids);
+                DRISHTI_EYE::EyeModel eyeR, eyeL;
+                segmentEyes(Ib.Ib, f, eyeR, eyeL);
+                if (eyeR.eyelids.size())
+                {
+                    f.eyeFullR = eyeR;
+                    f.eyeRightCenter = core::centroid(eyeR.eyelids);
+                }
+                if (eyeL.eyelids.size())
+                {
+                    f.eyeFullL = eyeL;
+                    f.eyeLeftCenter = core::centroid(eyeL.eyelids);
+                }
             }
         }
     }
 
-    static void extractCrops(const cv::Mat& Ib, cv::Rect eyes[2], const cv::Rect& bounds, cv::Mat crops[2])
+    using RectPair = std::array<cv::Rect, 2>;
+    using MatPair = std::array<cv::Mat, 2>;
+    static void extractCrops(const cv::Mat& Ib, const RectPair& eyes, const cv::Rect& bounds, MatPair& crops)
     {
         for (int i = 0; i < 2; i++)
         {
-            // TODO: replace this with a zero copy version:
-            // NOTE: Iris code seems to assume continuous memory layout
             cv::Rect roi = eyes[i] & bounds;
-            crops[i].create(eyes[i].size(), CV_8UC1);
-            crops[i].setTo(0);
-            Ib(roi).copyTo(crops[i](roi - eyes[i].tl()));
+            if (roi == eyes[i])
+            {
+                crops[i] = Ib(roi); // shallow copy
+            }
+            else
+            {
+                // We use a crop preserving deep copy in rare case of clipping
+                crops[i].create(eyes[i].size(), CV_8UC1);
+                crops[i].setTo(0);
+                Ib(roi).copyTo(crops[i](roi - eyes[i].tl()));
+            }
         }
     }
 
@@ -160,23 +165,21 @@ public:
         bool hasEyes = face.getEyeRegions(roiR, roiL, 0.666);
         if (hasEyes && roiR.area() && roiL.area())
         {
-            drishti::core::ScopeTimeLogger scopeTimeLogger = [this](double elapsed) {
+            // clang-format off
+            drishti::core::ScopeTimeLogger scopeTimeLogger = [this](double elapsed)
+            {
                 if (m_eyeRegressionTimeLogger)
                 {
                     m_eyeRegressionTimeLogger(elapsed);
                 }
             };
+            // clang-format on
 
-            // Apply some fixed offset to eye crops:
-            //            const cv::Point2f centerR = drishti::geometry::centroid<float,float>(roiR);
-            //            const cv::Point2f centerL = drishti::geometry::centroid<float,float>(roiL);
-            //            const cv::Point2f v1 = (centerL - centerR), v2(-v1.y,v1.x);
-            //            roiR -=(v2 * 0.05);
-            //            roiL -=(v2 * 0.05);
-
-            cv::Mat crops[2], flipped;
-            cv::Rect eyes[2] = { roiR, roiL };
+            MatPair crops;
+            RectPair eyes = { { roiR, roiL } };
             extractCrops(Ib, eyes, { { 0, 0 }, Ib.size() }, crops);
+
+            cv::Mat flipped;
             cv::flip(crops[1], flipped, 1); // Flip left eye to right eye cs
             crops[1] = flipped;
 
@@ -184,8 +187,8 @@ public:
             float theta = std::atan2(v.y, v.x);
             eyeR.angle = theta;
             eyeL.angle = (-theta);
-            DRISHTI_EYE::EyeModel* results[2]{ &eyeR, &eyeL };
 
+            std::array<DRISHTI_EYE::EyeModel*, 2> results{ { &eyeR, &eyeL } };
             for (int i = 0; i < 2; i++)
             {
                 m_eyeRegressor[i]->setDoIndependentIrisAndPupil(m_doIrisRefinement);
@@ -208,79 +211,81 @@ public:
         }
     }
 
-    static cv::Rect scaleRoi(cv::Rect& roi, float scale)
-    {
-        cv::Point2f tl(roi.tl()), br(roi.br()), center((tl + br) * 0.5f), diag(br - center);
-        return cv::Rect(center - (diag * scale), center + (diag * scale));
-    }
-
     void findLandmarks(const PaddedImage& Ib, std::vector<dsdkc::Shape>& shapes, const cv::Matx33f& Hdr_, bool isDetection)
     {
         // Scope based eye segmentation timer:
-        drishti::core::ScopeTimeLogger scopeTimeLogger = [this](double elapsed) {
+
+        // clang-format off
+        drishti::core::ScopeTimeLogger scopeTimeLogger = [this](double elapsed)
+        {
             if (m_regressionTimeLogger)
             {
                 m_regressionTimeLogger(elapsed);
             }
         };
+        // clang-format on
 
         const cv::Mat gray = Ib.Ib;
         CV_Assert(gray.type() == CV_8UC1);
 
-        std::vector<std::pair<drishti::ml::ShapeEstimator*, cv::Matx33f>> regressors{
-            { m_regressor.get(), m_Hrd },
-        };
-
-        if (m_regressor2.get())
-        {
-            regressors.emplace_back(m_regressor2.get(), m_Hrd2);
-        }
-
-        cv::Rect fullBounds({ 0, 0 }, Ib.Ib.size());
-        cv::Rect bounds = Ib.roi.area() ? Ib.roi : fullBounds;
+        const cv::Rect fullBounds({ 0, 0 }, Ib.Ib.size());
+        const cv::Rect bounds = Ib.roi.area() ? Ib.roi : fullBounds;
 
         for (int i = 0; i < shapes.size(); i++)
         {
-            int best = 0;
+            // Detection rectangles may have a geometry (w.r.t. face features) that is incompatible with the
+            // ROI geometry used for training the face landmark regressor.  In cases where we aim to refine
+            // such raw detection rectangles, we must map them onto faces in the landmark regression image
+            // with a geometry that is similar to that used during training.  We do this by using a known
+            // approximate homography mapping our mean detection face features (eyes, nose, moiuth) to the
+            // same face mean face features from the casecaded pose regressor training.  This transformation
+            // must also be composed with the input Hdr_ homography that provides a transformation from the
+            // detection image coordinate system to the landmark regression coordinate system, which is most
+            // likely a scale and translation (detection typically happens at lower resolution).
+            const cv::Rect roi = isDetection ? mapDetectionToRegressor(shapes[i].roi, m_Hrd, Hdr_) : (Hdr_ * shapes[i].roi);
 
-            // Use richest regressor whos projected roi still fits in the image (or almost)
-            cv::Rect roi;
-            for (int j = int(regressors.size()) - 1; j >= 0; j--)
-            {
-                roi = isDetection ? mapDetectionToRegressor(shapes[i].roi, regressors[j].second, Hdr_) : shapes[i].roi;
-                roi = scaleRoi(roi, m_scaling);
-                if ((roi & bounds) == roi)
-                {
-                    best = j;
-                    break;
-                }
-            }
+            // Perform an addition (optional) scaling that can be tuned easily by the user as some detection
+            // scales will perform better than the mean mapping used above (experimentally).
+            shapes[i].roi = scaleRoi(roi, m_scaling);
 
-            shapes[i].roi = roi;
-            cv::Rect clipped = shapes[i].roi & fullBounds;
-            cv::Mat crop = gray(clipped);
+            // Crop the image such that the ROI to pixel geometry is preserved.  For most cases this is
+            // a simple shallow copy/view, but in cases where the border is clipped, then we will effectively
+            // perform border padding to achieve this goal.  This make our prediction ROI closest to the ROI
+            // used during training and ensures our cascaded pose regression has the best chance of success.
+            cv::Mat crop = geometryPreservingCrop(shapes[i].roi, gray);
 
-            // TODO [DJH]: Avoid the need for clipping the image
-            if (clipped.size() != shapes[i].roi.size())
-            {
-                cv::Mat padded(shapes[i].roi.size(), crop.type(), cv::Scalar::all(0));
-                crop.copyTo(padded(clipped - shapes[i].roi.tl()));
-                cv::swap(crop, padded);
-            }
-
-            auto& regressor = regressors[best].first;
-
-            const float scaleInv = 1.f;
-            std::vector<cv::Point2f> points;
             std::vector<bool> mask;
-            (*regressor)(crop, points, mask);
-
+            std::vector<cv::Point2f> points;
+            (*m_regressor)(crop, points, mask);
             for (const auto& p : points)
             {
-                cv::Point q((p.x * scaleInv) + shapes[i].roi.x, (p.y * scaleInv) + shapes[i].roi.y);
+                const cv::Point q = p + cv::Point2f(shapes[i].roi.tl());
                 shapes[i].contour.emplace_back(q.x, q.y, 0);
             }
         }
+    }
+
+    static cv::Rect scaleRoi(const cv::Rect& roi, float scale)
+    {
+        cv::Point2f tl(roi.tl()), br(roi.br()), center((tl + br) * 0.5f), diag(br - center);
+        return cv::Rect(center - (diag * scale), center + (diag * scale));
+    }
+
+    // Return requested light weight copy if roi is contained in frame bounds, else perform
+    // a deep copy that preseves the crop geometry via border padding.  This ensures that
+    // landmark regression has the best chance of success.
+    static cv::Mat geometryPreservingCrop(const cv::Rect& roi, const cv::Mat& gray)
+    {
+        const cv::Rect bounds({ 0, 0 }, gray.size());
+        const cv::Rect clipped = roi & bounds;
+        cv::Mat crop = gray(clipped);
+        if (clipped.size() != roi.size())
+        {
+            cv::Mat padded(roi.size(), gray.type(), cv::Scalar::all(0));
+            crop.copyTo(padded(clipped - roi.tl()));
+            cv::swap(crop, padded);
+        }
+        return crop;
     }
 
     // Notes on motion and coordinate systems:
@@ -288,8 +293,7 @@ public:
     // FaceDetector::m_Hrd : map normalized regressor mean face to normalized detector mean face
     // denormalize(s.roi)  : denormalize points
     // Hdr                 : detector image to regressor
-
-    cv::Rect mapDetectionToRegressor(const cv::Rect& roi, const cv::Matx33f& Hrd, const cv::Matx33f& Hdr_)
+    static cv::Rect mapDetectionToRegressor(const cv::Rect& roi, const cv::Matx33f& Hrd, const cv::Matx33f& Hdr_)
     {
         // 1) map the unit square from regressor to the detector;
         // 2) denormalize coordinates in the detector image;
@@ -367,10 +371,6 @@ public:
         {
             m_Hrd = getAffineMotionFromRegressorToDetector(*m_regressor);
         }
-        if (m_regressor2)
-        {
-            m_Hrd2 = getAffineMotionFromRegressorToDetector(*m_regressor2);
-        }
     }
 
     const FaceModel& getFaceDetectorMean()
@@ -443,13 +443,6 @@ public:
             m_regressor->setStagesHint(stages);
         }
     }
-    void setFace2StagesHint(int stages)
-    {
-        if (m_regressor2)
-        {
-            m_regressor2->setStagesHint(stages);
-        }
-    }
     void setEyelidStagesHint(int stages)
     {
         for (auto& regressor : m_eyeRegressor)
@@ -464,20 +457,16 @@ public:
             regressor->setIrisStagesHint(stages);
         }
     }
-    void setIrisStagesRepetitionFactor(int x)
+
+    drishti::ml::ObjectDetector* getDetector()
     {
-        for (auto& regressor : m_eyeRegressor)
-        {
-            regressor->setIrisStagesRepetitionFactor(x);
-        }
+        return m_detector.get();
     }
 
-    //private:
+protected:
+    FaceSpecification::Format m_landmarkFormat = FaceSpecification::kibug68;
 
-    FaceSpecification::Format m_landmarkFormat = FaceSpecification::HELEN;
-
-    cv::Mat m_Ib; // TODO: review.  needed for clean virtual api
-
+    cv::Mat m_Ib;
     bool m_doIrisRefinement = true;
     bool m_doEyeRefinement = true;
     bool m_doNMSGlobal = false;
@@ -486,21 +475,25 @@ public:
 
     FaceModel m_faceDetectorMean;
     cv::Matx33f m_Hrd = cv::Matx33f::eye();
-    cv::Matx33f m_Hrd2 = cv::Matx33f::eye();
 
     TimeLoggerType m_detectionTimeLogger;
     TimeLoggerType m_regressionTimeLogger;
     TimeLoggerType m_eyeRegressionTimeLogger;
     std::unique_ptr<drishti::ml::ObjectDetector> m_detector;
     std::unique_ptr<drishti::ml::ShapeEstimator> m_regressor;
-    std::unique_ptr<drishti::ml::ShapeEstimator> m_regressor2;
-
     std::vector<std::unique_ptr<DRISHTI_EYE::EyeModelEstimator>> m_eyeRegressor;
 
     EyeCropper m_eyeCropper;
 };
 
 // ((((((((((((( API )))))))))))))
+
+FaceDetector::FaceDetector(FaceDetectorFactory& resources)
+    : m_impl(drishti::core::make_unique<Impl>(resources))
+{
+}
+
+FaceDetector::~FaceDetector() = default;
 
 std::vector<cv::Point2f> FaceDetector::getFeatures() const
 {
@@ -539,12 +532,7 @@ void FaceDetector::setLogger(MatLoggerType logger)
 }
 drishti::ml::ObjectDetector* FaceDetector::getDetector()
 {
-    return m_impl->m_detector.get();
-}
-
-FaceDetector::FaceDetector(FaceDetectorFactory& resources)
-    : m_impl(std::make_shared<Impl>(resources))
-{
+    return m_impl->getDetector();
 }
 
 void FaceDetector::setLandmarkFormat(FaceSpecification::Format format)
@@ -562,10 +550,6 @@ void FaceDetector::detect(const MatP& I, std::vector<FaceModel>& faces)
     // Run detections
     std::vector<dsdkc::Shape> shapes;
     m_impl->detect(I, shapes);
-
-#if DRISHTI_FACE_DETECTOR_PREVIEW_DETECTIONS
-    previewDetections(I, shapes);
-#endif
 
     faces.resize(shapes.size());
     for (int i = 0; i < faces.size(); i++)
@@ -589,8 +573,6 @@ void FaceDetector::refine(const PaddedImage& Ib, std::vector<FaceModel>& faces, 
     }
 }
 
-//virtual void operator()(const MatP &I, const cv::Mat &Ib, std::vector<FaceModel> &faces, const cv::Matx33f &H=EYE);
-
 // face.area() > 0 indicates detection
 void FaceDetector::operator()(const MatP& I, const PaddedImage& Ib, std::vector<FaceModel>& faces, const cv::Matx33f& H)
 {
@@ -605,7 +587,7 @@ void FaceDetector::operator()(const MatP& I, const PaddedImage& Ib, std::vector<
 
 cv::Size FaceDetector::getWindowSize() const
 {
-    return m_impl->m_detector->getWindowSize();
+    return m_impl->getDetector()->getWindowSize();
 }
 void FaceDetector::setDetectionTimeLogger(TimeLoggerType logger)
 {
@@ -646,53 +628,20 @@ void FaceDetector::setFaceStagesHint(int stages)
 {
     m_impl->setFaceStagesHint(stages);
 }
-void FaceDetector::setFace2StagesHint(int stages)
-{
-    m_impl->setFace2StagesHint(stages);
-}
+
 void FaceDetector::setEyelidStagesHint(int stages)
 {
     m_impl->setEyelidStagesHint(stages);
 }
-void FaceDetector::setIrisStagesHint(int stages)
-{
-    m_impl->setIrisStagesRepetitionFactor(stages);
-}
-void FaceDetector::setIrisStagesRepetitionFactor(int x)
-{
-    m_impl->setIrisStagesRepetitionFactor(x);
-}
-
-#if DRISHTI_FACE_DETECTOR_PREVIEW_DETECTIONS
-
-static void previewDetections(const MatP& I, std::vector<dsdkc::Shape>& shapes)
-{
-    if (shapes.size())
-    {
-        cv::Mat canvas;
-        cv::Mat It = I[0].t();
-        It.convertTo(canvas, CV_8UC1, 255);
-        cv::cvtColor(canvas, canvas, cv::COLOR_GRAY2BGR);
-        for (auto& f : shapes)
-        {
-            //std::cout << "Roi:" << f.roi << std::endl;
-            cv::rectangle(canvas, f.roi, { 0, 255, 0 }, 1, 8);
-        }
-        cv::imshow("input", canvas), cv::waitKey(0);
-    }
-}
-
-#endif
 
 // utility
 
 // Map from normalized coordinate system to input ROI
 static cv::Matx33f denormalize(const cv::Rect& roi)
 {
-    cv::Point2f tl(roi.tl()), br(roi.br()), center((tl + br) * 0.5f);
-    cv::Matx33f C1(1, 0, -0.5, 0, 1, -0.5, 0, 0, 1);
-    cv::Matx33f C2(1, 0, +center.x, 0, 1, +center.y, 0, 0, 1);
-    cv::Matx33f S = cv::Matx33f::diag({ static_cast<float>(roi.width), static_cast<float>(roi.height), 1.f });
+    const cv::Matx33f C1 = transformation::translate(-0.5f, -0.5f);
+    const cv::Matx33f C2 = transformation::translate(transformation::center(roi));
+    const cv::Matx33f S = cv::Matx33f::diag({ static_cast<float>(roi.width), static_cast<float>(roi.height), 1.f });
     return (C2 * S * C1);
 }
 

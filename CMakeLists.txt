@@ -7,25 +7,49 @@ cmake_minimum_required(VERSION 3.3)
 ### CMAKE_MODULE_PATH ###
 #########################
 
+set(drishti_upload_modules "${CMAKE_CURRENT_LIST_DIR}/drishti-upload/cmake/Modules")
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake/Modules")
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/drishti-upload/cmake/Modules")
+list(APPEND CMAKE_MODULE_PATH "${drishti_upload_modules}")
 
 ############################
 ### HunterGate and cache ###
 ############################
 
-# drishti specific hunter cache pacakges:
-list(APPEND HUNTER_CACHE_SERVERS "https://github.com/elucideye/hunter-cache")
+# The drishti-upload module provides a common hunter config with
+# a corresponding binary server cache.  We use this for fast CI
+# builds by default.  It can be disabled with this option in favor
+# of a local cmake/Hunter/config.cmake
+option(DRISHTI_USE_DRISHTI_UPLOAD "Use the drishti-upload config and cache" OFF)
 
-include(drishti_set_hunter_gate)
-drishti_set_hunter_version(DRISHTI_HUNTER_GATE_URL DRISHTI_HUNTER_GATE_SHA1)
+if(EXISTS "${drishti_upload_modules}" AND DRISHTI_USE_DRISHTI_UPLOAD)
+
+  # drishti specific hunter cache pacakges:
+  set(
+      HUNTER_CACHE_SERVERS
+      "https://github.com/elucideye/hunter-cache"
+      CACHE
+      STRING
+      "Hunter cache servers"
+  )
+  include(drishti_set_hunter_gate)
+  drishti_set_hunter_version(DRISHTI_HUNTER_GATE_URL DRISHTI_HUNTER_GATE_SHA1)
+  set(DRISHTI_HUNTER_CONFIG "${CMAKE_CURRENT_LIST_DIR}/drishti-upload/config.cmake")
+else()
+  # Release archive will not contain submodule 'drishti-upload'.
+  # It's a valid case when archive used in Hunter.
+  # URL/SHA1 arguments of HunterGate call will not be used while building
+  # in this situation.
+  set(DRISHTI_HUNTER_GATE_URL "https://github.com/ruslo/hunter/archive/v0.19.227.tar.gz")
+  set(DRISHTI_HUNTER_GATE_SHA1 "808b778a443fcdf19c2d18fea8fa4bb59d16596a")
+  set(DRISHTI_HUNTER_CONFIG "${CMAKE_CURRENT_LIST_DIR}/cmake/Hunter/config.cmake")
+endif()
 
 include("cmake/HunterGate.cmake")
 HunterGate(
   URL "${DRISHTI_HUNTER_GATE_URL}"
   SHA1 "${DRISHTI_HUNTER_GATE_SHA1}"
-  FILEPATH "${CMAKE_CURRENT_LIST_DIR}/drishti-upload/config.cmake"
-  )
+  FILEPATH "${DRISHTI_HUNTER_CONFIG}"
+)
 
 ##########################
 ### CI Travis/Appveyor ###
@@ -39,7 +63,7 @@ if(travis_deploy)
 elseif(appveyor_deploy)
   set(version "$ENV{APPVEYOR_REPO_TAG_NAME}")
 else()
-  set(version "v0.8.2") # note: rc
+  set(version "v0.8.3") # note: rc
 endif()
 
 string(REGEX REPLACE "^v" "" version "${version}")
@@ -83,7 +107,7 @@ set(DRISHTI_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_LIST_DIR}/src/lib")
 #   This is an override for the same setting in
 #   drishti-upload/config.cmake.
 #
-# DRISHTI_BIULD_MIN_SIZE:
+# DRISHTI_BUILD_MIN_SIZE:
 #   This can alter the hunter-package options for
 #   various dependencies in order to produce smaller builds,
 #   such as eliminating code related to model training.
@@ -98,8 +122,10 @@ set(DRISHTI_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_LIST_DIR}/src/lib")
 # and the CI builds are likely to terminate and report
 # an error.
 
-option(DRISHTI_BUILD_SHARED_SDK "Build shared SDK" ON)
+option(DRISHTI_BUILD_SHARED_SDK "Build shared SDK" OFF)
 option(DRISHTI_BUILD_MERGED_SDK "Merge all static dependencies" OFF)
+
+option(DRISHTI_COPY_3RDPARTY_LICENSES "Install 3rd party licenses" ON)
 
 # See: drishti-upload/config.cmake
 # option(DRISHTI_BUILD_MIN_SIZE "Build minimum size lib (exclude training)" ON)
@@ -131,6 +157,14 @@ if(IOS OR ANDROID)
   set(DRISHTI_IS_MOBILE TRUE)
 else()
   set(DRISHTI_IS_MOBILE FALSE)
+endif()
+
+string(COMPARE EQUAL "$ENV{TRAVIS}" "true" travis_ci)
+string(COMPARE EQUAL "$ENV{APPVEYOR}" "True" appveyor_ci)
+if(travis_ci OR appveyor_ci)
+  set(DRISHTI_CI TRUE)
+else()
+  set(DRISHTI_CI FALSE)
 endif()
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
@@ -193,22 +227,6 @@ if(XCODE)
 
 endif()
 
-# OpenMP compiler checks take > 10 seconds on ios "Try OpenMP CXX flag = [-openmp]" in xcode
-# TODO: Investigate why this is so much slower with ios toolchain
-# OpenMP also causes a compiler error in Eigen on vs-14-2015
-# http://eigen.tuxfamily.org/bz/show_bug.cgi?id=1131
-if(NOT XCODE AND NOT MSVC) # We'll never have openmp on ios, and this test is really slow
-  # This is only used for xgboost training and it will be removed once the
-  # xgboost interface is updated.
-  find_package( OpenMP )
-  if(OPENMP_FOUND)
-    message("OPENMP FOUND")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
-  endif()
-endif()
-
 #######################
 ### Packaging/CPack ###
 #######################
@@ -234,22 +252,7 @@ endif()
 # Serialization options pertain to both library builds and integration testing.
 # In the case of integration testing, the user must specify serialization options
 # that are compatible with the compiled libraries.
-option(DRISHTI_SERIALIZE_WITH_BOOST "Perform major serialization with boost" ON)
-option(DRISHTI_SERIALIZE_WITH_CEREAL "Perform major serialization with cereal" ON)
-option(DRISHTI_SERIALIZE_WITH_CVMATIO "Perform serialization with cvmatio" ON)
-option(DRISHTI_SERIALIZE_MODELS_WITH_CEREAL "Perform minor model serialization with cereal" ON)
-option(DRISHTI_USE_TEXT_ARCHIVES "Support TEXT archives for serialization (extra size)" OFF)
-
-# Currently we must always instantiate Output archives for any
-# Input archive we instantiate.  For boost the output archives
-# are excluded in DRISHTI_BUILD_MIN_SIZE=ON.  We can't do that
-# with cereal currently, so DRISHTI_SERIALIZE_WITH_CEREAL_OUTPUT
-# is introduced (default ON) for future use when this functionality
-# becomes possible in cereal.
-# see: https://github.com/USCiLab/cereal/issues/406
-# If this is resolved, the cereal output archives can be disabled (OFF) when
-# DRISHTI_BUILD_MIN_SIZE=ON.
-option(DRISHTI_BUILD_CEREAL_OUTPUT_ARCHIVES "Instantiate CEREAL output archives" ON)
+option(DRISHTI_SERIALIZE_WITH_CVMATIO "Perform serialization with cvmatio" OFF)
 
 ################
 #### Testing ###
@@ -259,19 +262,17 @@ option(DRISHTI_BUILD_CEREAL_OUTPUT_ARCHIVES "Instantiate CEREAL output archives"
 # ${DRISHTISDK}/src/lib/drishti/<module>/ut/
 # ${DRISHTISDK}/src/tests
 
-# DRISHIT_BUILD_INTEGRATION_TESTS:
+# DRISHTI_BUILD_INTEGRATION_TESTS:
 # ${DRISHTISDK}/src/examples/integration/
 
-option(DRISHTI_BUILD_BENCHMARKS "Build internal benchmarks (size and speed)." ON)
-option(DRISHTI_BUILD_TESTS "Build and run internal unit tests." ON)
+option(DRISHTI_BUILD_BENCHMARKS "Build internal benchmarks (size and speed)." OFF)
+option(DRISHTI_BUILD_TESTS "Build and run internal unit tests." OFF)
 option(DRISHTI_BUILD_INTEGRATION_TESTS "Build and run tests for installed libraries." OFF)
 
-string(COMPARE EQUAL "$ENV{TRAVIS}" "true" travis_ci)
-string(COMPARE EQUAL "$ENV{APPVEYOR}" "True" appveyor_ci)
-if(travis_ci OR appveyor_ci)
-  set(DRISHTI_CI TRUE)
+if(DRISHTI_BUILD_TESTS AND (ANDROID OR NOT ${DRISHTI_CI}))
+  set(DRISHTI_DO_GPU_TESTING TRUE)
 else()
-  set(DRISHTI_CI FALSE)
+  set(DRISHTI_DO_GPU_TESTING FALSE)
 endif()
 
 if(DRISHTI_BUILD_TESTS OR DRISHTI_BUILD_INTEGRATION_TESTS)
@@ -291,16 +292,27 @@ endif()
 ### Test data ###
 #################
 
-include(drishti_download_data)
+hunter_add_package(drishti_assets)
+find_package(drishti_assets CONFIG REQUIRED)
 
-### Download 'assets'
-drishti_download_data(
-    URL "https://github.com/elucideye/drishti-assets/archive/v1.5.tar.gz"
-    SHA1 "b7beaaca2e5ac4653e6c3fa27826407665e01145"
-    NAME "assets"
-    DIR assets_dir
-)
-message("Assets directory: '${assets_dir}'")
+set(DRISHTI_ASSETS_VARS
+  DRISHTI_ASSETS_FACE_DETECTOR
+  DRISHTI_ASSETS_FACE_DETECTOR_MEAN
+  DRISHTI_ASSETS_FACE_LANDMARK_REGRESSOR
+  DRISHTI_ASSETS_EYE_MODEL_REGRESSOR
+  )
+
+foreach(model ${DRISHTI_ASSETS_VARS})
+  # Override assets using corresponding environment variables if present:
+  if(DEFINED ENV{${model}})
+    message("RESET ${model} = $ENV{${model}}")
+    unset(${model} CACHE)
+    set(${model} $ENV{${model}})
+  endif()
+endforeach()
+
+hunter_add_package(drishti_faces)
+find_package(drishti_faces CONFIG REQUIRED)
 
 #######################
 ### Compiler checks ###
@@ -372,20 +384,18 @@ option(BUILD_SHARED_LIBS "Build package with shared libraries." OFF)
 #################################
 
 # This will build a static library using all specified modules
-option(DRISHTI_BUILD_WORLD "Build single library" ON)
+option(DRISHTI_INSTALL "Run package-config installation" ON)
 option(DRISHTI_BUILD_C_INTERFACE "Build C API" OFF)
-option(DRISHTI_BUILD_EXAMPLES "Build the examples" OFF)
+option(DRISHTI_BUILD_EXAMPLES "Build the examples" ON)
 option(DRISHTI_BUILD_ASAN_TEST "Intentional ASAN test" OFF)
-option(DRISHTI_BUILD_ACF "Drishti ACF lib." ON)
-option(DRISHTI_BUILD_FACE "Drishti face lib." ON)
-option(DRISHTI_BUILD_HCI "Drishti video and HCI lib." ON)
-option(DRISHTI_BUILD_REGRESSION_SIMD "Build regression using SIMD." ON)
-option(DRISHTI_BUILD_REGRESSION_FIXED_POINT "Build regression using fixed point." ON)
+option(DRISHTI_BUILD_FACE "Drishti face lib" ON)
+option(DRISHTI_BUILD_HCI "Drishti video and HCI lib" ON)
+drishti_option(DRISHTI_BUILD_REGRESSION_SIMD "Build multivariate gradient boosting using SIMD" ON IF(${DRISHTI_MOBILE}))
+drishti_option(DRISHTI_BUILD_REGRESSION_FIXED_POINT "Build multivariate gradient boosting using fixed point" ON IF(${DRISHTI_MOBILE}))
 
 # 3rd party libraries
 option(DRISHTI_BUILD_DEST "Build dest lib" OFF)
 option(DRISHTI_BUILD_EOS "EOS 2D-3D fitting" OFF) # duplicate symbols
-option(DRISHTI_BUILD_CV_ML "Build OpenCV ML classes" OFF)
 
 ##################################################
 ### Installation/packaging paths and variables ###
@@ -393,7 +403,7 @@ option(DRISHTI_BUILD_CV_ML "Build OpenCV ML classes" OFF)
 set(CMAKE_PROJECT_NAME drishti) # overwrite drishtisdk
 set(drishti_generated_dir "${CMAKE_CURRENT_BINARY_DIR}/generated")
 set(drishti_include_install_dir "include")
-set(drishti_config_install_dir "share/${CMAKE_PROJECT_NAME}")
+set(drishti_config_install_dir "lib/cmake/${CMAKE_PROJECT_NAME}")
 set(drishti_version_config "${drishti_generated_dir}/${CMAKE_PROJECT_NAME}ConfigVersion.cmake")
 set(drishti_project_config "${drishti_generated_dir}/${CMAKE_PROJECT_NAME}Config.cmake")
 set(drishti_targets_export_name "${CMAKE_PROJECT_NAME}Targets")
@@ -404,3 +414,10 @@ set(drishti_namespace "${CMAKE_PROJECT_NAME}::")
 ##################################
 
 add_subdirectory(src)
+
+#################################
+### Print the full asset list ###
+#################################
+foreach(model ${DRISHTI_ASSETS_VARS})
+  message(">>> ${model} = ${${model}}")
+endforeach()

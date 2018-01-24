@@ -5,11 +5,7 @@
 // http://www.csc.kth.se/~vahidk/papers/KazemiCVPR14.pdf
 //
 
-typedef unsigned char boolean;
-#define TRUE 1
-#define FALSE 0
-#define HAVE_BOOLEAN
-#include "jpeglib.h"
+#include "drishti/core/drishti_stdlib_string.h" // FIRST!
 
 #include <opencv2/core/core.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
@@ -27,8 +23,11 @@ typedef unsigned char boolean;
 
 #include "drishti/core/Line.h"
 #include "drishti/core/string_utils.h"
-#include "drishti/ml/shape_predictor.h"
+#include "drishti/ml/shape_predictor_archive.h"
 #include "drishti/testlib/drishti_cli.h"
+
+#include "drishti/core/drishti_cereal_pba.h"
+#include "drishti/core/drishti_cv_cereal.h"
 
 #include "cxxopts.hpp"
 
@@ -106,7 +105,7 @@ int mine(int argc, char* argv[])
     //dlib::deserialize( model.c_str() ) >> sp;
 
     drishti::ml::shape_predictor sp;
-    load_pba_z(sModel, sp);
+    load_cpb(sModel, sp);
     int ellipse_count = sp.m_ellipse_count;
     
 #if 0

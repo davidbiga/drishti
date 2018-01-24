@@ -11,11 +11,7 @@
 //  - support trailing ellipse parameters (embedded in point list)
 //    for simultaneous contour and ellipse model regression
 
-typedef unsigned char boolean;
-#define TRUE 1
-#define FALSE 0
-#define HAVE_BOOLEAN
-#include "jpeglib.h"
+#include "drishti/core/drishti_stdlib_string.h" // FIRST !!!
 
 #include <opencv2/core/core.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
@@ -30,11 +26,15 @@ typedef unsigned char boolean;
 #include <dlib/serialize.h>
 #include <dlib/data_io/load_image_dataset.h>
 
-#include "drishti/core/boost_serialize_common.h"
 #include "drishti/core/string_utils.h"
 #include "drishti/core/Line.h"
-#include "drishti/ml/shape_predictor.h"
+#include "drishti/ml/shape_predictor_archive.h"
+#include "drishti/ml/shape_predictor_trainer.h"
 #include "drishti/geometry/Ellipse.h"
+#include "drishti/core/drishti_cereal_pba.h"
+#include "drishti/core/drishti_cv_cereal.h"
+
+#include "RecipeIO.h"
 
 #include "cxxopts.hpp"
 
@@ -65,6 +65,28 @@ static void dump_thumbs(DlibImageArray& images_train, DlibObjectSet& faces_train
 static std::vector<int> parse_dimensions(const std::string& str);
 static dlib::rectangle parse_roi(const std::string& str);
 
+static void view_images(DlibImageArray& images_train, DlibObjectSet& faces_train)
+{
+    for (int i = 0; i < images_train.size(); i++)
+    {
+        auto& src = images_train[i];
+        cv::Mat image(src.nr(), src.nc(), CV_8UC1, (void*)&src[0][0], src.width_step());
+        cv::Mat canvas = image.clone();
+
+        for (int j = 0; j < faces_train[i].size(); j++)
+        {
+            // reduce roi:
+            for (int k = 0; k < faces_train[i][j].num_parts(); k++)
+            {
+                auto& part = faces_train[i][j].part(k);
+                cv::Point2f p(part.x(), part.y());
+                cv::circle(canvas, p, 4, { 255, 255, 255 }, -1, 8);
+                cv::imwrite("/tmp/foo.png", canvas);
+            }
+        }
+    }
+}
+
 int gauze_main(int argc, char* argv[])
 {
     auto logger = drishti::core::Logger::create("train_shape_predictor");
@@ -76,52 +98,32 @@ int gauze_main(int argc, char* argv[])
     bool do_thumbs = false;
     bool do_verbose = false;
     bool do_silent = false;
-    bool do_affine = false;
-    bool do_interpolate = false;
-    bool npd = false;
-    float lambda = 0.1;
-    float nu = 0.1;
-    float padding = 0;
-    int cascades = 10;
-    int depth = 5;
-    int ellipse_count = 0;
-    int features = 400;
-    int oversampling = 20;
-    int splits = 20;
-    int trees_per_level = 500;
-    int width = 0;
-    std::string sDimensions;
+
+    drishti::dlib::Recipe recipe;
+
     std::string sModel;
     std::string sRoi;
     std::string sTest;
     std::string sTrain;
+    std::string sRecipe;
+    std::string sRecipeOut;
     std::string sOutput;
-
+    
     cxxopts::Options options("train_shape_predictor", "Command line interface for dlib shape_predictor training");
 
     // clang-format off
     options.add_options()
         ( "output", "Output directory for intermediate results", cxxopts::value<std::string>(sOutput))
-        ( "interpolate", "do interpolated features", cxxopts::value<bool>(do_interpolate))
-        ( "roi", "exclusion roi (x,y,w,h) normalized cs", cxxopts::value<std::string>(sRoi))
-        ( "thumbs", "dump thumbnails of width n", cxxopts::value<bool>(do_thumbs))
-        ( "affine", "do affine normalization", cxxopts::value<bool>(do_affine))
-        ( "npd", "use normalized pixel differences" ,cxxopts::value<bool>(npd))
-        ( "ellipse", "last 5*N points are ellipse coords", cxxopts::value<int>(ellipse_count))
-        ( "dimensions", "e.g. 2,2,4,4,4,4,6,6,8,8,8,8", cxxopts::value<std::string>(sDimensions))
-        ( "width", "processing resolution", cxxopts::value<int>(width))
         ( "train", "training file", cxxopts::value<std::string>(sTrain))
         ( "test", "testing file", cxxopts::value<std::string>(sTest))
         ( "model", "Model file", cxxopts::value<std::string>(sModel))
-        ( "cascades", "Cascade depth", cxxopts::value<int>(cascades))
-        ( "depth", "Depth", cxxopts::value<int>(depth))
-        ( "trees-per-level", "Number of trees per cascade level", cxxopts::value<int>(trees_per_level))
-        ( "nu", "Regularization (lower == more)", cxxopts::value<float>(nu))
-        ( "oversampling", "Oversampling amount", cxxopts::value<int>(oversampling))
-        ( "features", "Feature pool size ", cxxopts::value<int>(features))
-        ( "lambda", "Lambda for feature separation", cxxopts::value<float>(lambda))
-        ( "splits", "Number of test splits", cxxopts::value<int>(splits))
-        ( "padding", "Feature pool region padding", cxxopts::value<float>(padding))
+        ( "thumbs", "dump thumbnails of width n", cxxopts::value<bool>(do_thumbs))        
+        ( "roi", "exclusion roi (x,y,w,h) normalized cs", cxxopts::value<std::string>(sRoi))
+
+        // Regression parameters:
+        ( "recipe", "Cascaded pose regression training recipe", cxxopts::value<std::string>(sRecipe))
+        ( "boilerplate", "Output boilerplate recipe file", cxxopts::value<std::string>(sRecipeOut))        
+        
         ( "threads", "Use worker threads when possible", cxxopts::value<bool>(do_threads))
         ( "verbose", "Print verbose diagnostics", cxxopts::value<bool>(do_verbose))
         ( "silent", "Disable logging entirely", cxxopts::value<bool>(do_silent))
@@ -137,39 +139,52 @@ int gauze_main(int argc, char* argv[])
 
     if((argumentCount <= 1) || options.count("help"))
     {
-        logger->info() << options.help({""});
+        logger->info(options.help({""}));
+        return 0;
+    }
+
+    if(!sRecipeOut.empty())
+    {
+        recipe.dimensions = { 4, 8, 12, 16, 20, 24 };
+        saveJSON(sRecipeOut, recipe);
         return 0;
     }
     
+    if(sRecipe.empty())
+    {
+        logger->error("Must specify valid training recipe.");
+        return 1;
+    }
+    
+    loadJSON(sRecipe, recipe);
+    
     if(sTrain.empty())
     {
-        logger->error() << "Must specify valid XML training file.";
+        logger->error("Must specify valid XML training file.");
         return 1;
     }
 
     if(sModel.empty())
     {
-        logger->error() << "Must specify output *.dat model file.";
+        logger->error("Must specify output *.dat model file.");
         return 1;
     }
 
     if(do_verbose)
     {
-        logger->info() << "cascade_depth: " << cascades;
-        logger->info() << "tree_depth: " << depth;
-        logger->info() << "num_trees_per_cascade_level: " << trees_per_level;
-        logger->info() << "nu: " << nu;
-        logger->info() << "oversampling_amount: " << oversampling;
-        logger->info() << "feature_pool_size: " << features;
-        logger->info() << "lambda; " << lambda;
-        logger->info() << "num_test_splits: " << splits;
-        logger->info() << "feature_pool_region_padding: " << padding;
-        logger->info() << "use npd: " << npd;
-        logger->info() << "affine:" << do_affine;
-        logger->info() << "interpolated: " << do_interpolate;
+        logger->info("cascade_depth: {}", recipe.cascades);
+        logger->info("tree_depth: {}", recipe.depth);
+        logger->info("num_trees_per_cascade_level: {}", recipe.trees_per_level);
+        logger->info("nu: {}", recipe.nu);
+        logger->info("oversampling_amount: {}", recipe.oversampling);
+        logger->info("feature_pool_size: {}", recipe.features);
+        logger->info("lambda: {}", recipe.lambda);
+        logger->info("num_test_splits: {}", recipe.splits);
+        logger->info("feature_pool_region_padding: {}", recipe.padding);
+        logger->info("use npd: {}", recipe.npd);
+        logger->info("affine: {}", recipe.do_affine);
+        logger->info("interpolated: {}", recipe.do_interpolate);
     }
-
-    std::vector<int> dimensions = parse_dimensions(sDimensions);
 
     dlib::array<dlib::array2d<uint8_t>> images_train, images_test;
     std::vector<std::vector<dlib::full_object_detection> > faces_train, faces_test;
@@ -177,17 +192,23 @@ int gauze_main(int argc, char* argv[])
     dlib::image_dataset_file source(sTrain);
     source.skip_empty_images();
     load_image_dataset(images_train, faces_train, source);
+    
+    if(faces_train.empty())
+    {
+        logger->error("No shapes specified for training");
+        return 1;
+    }
 
     if(do_thumbs)
     {
-        dump_thumbs(images_train, faces_train, sOutput, ellipse_count);
+        dump_thumbs(images_train, faces_train, sOutput, recipe.ellipse_count);
         return 0;
     }
 
     // Here we optionally downsample:
-    if(width > 0)
+    if(recipe.width > 0)
     {
-        reduce_images(images_train, faces_train, ellipse_count, width);
+        reduce_images(images_train, faces_train, recipe.ellipse_count, recipe.width);
     }
 
     dlib::drectangle roi;
@@ -198,38 +219,57 @@ int gauze_main(int argc, char* argv[])
 
     // Now make the object responsible for training the model.
     _SP::shape_predictor_trainer trainer;
-    trainer.set_cascade_depth(cascades);
-    trainer.set_tree_depth(depth);
-    trainer.set_num_trees_per_cascade_level(trees_per_level);
-    trainer.set_nu(nu);                            // regularization (smaller nu == more regularization)
-    trainer.set_oversampling_amount(oversampling); // amount of oversampling for training data
-    trainer.set_feature_pool_size(features);
-    trainer.set_lambda(lambda);                    // feature separation (not learning rate)
-    trainer.set_num_test_splits(splits);
-    trainer.set_feature_pool_region_padding(padding);
+    trainer.set_cascade_depth(recipe.cascades);
+    trainer.set_tree_depth(recipe.depth);
+    trainer.set_num_trees_per_cascade_level(recipe.trees_per_level);
+    trainer.set_nu(recipe.nu);                            // regularization (smaller nu == more regularization)
+    trainer.set_oversampling_amount(recipe.oversampling); // amount of oversampling for training data
+    trainer.set_feature_pool_size(recipe.features);
+    trainer.set_lambda(recipe.lambda);                    // feature separation (not learning rate)
+    trainer.set_num_test_splits(recipe.splits);
+    trainer.set_feature_pool_region_padding(recipe.padding);
 
+    // new parameters
+    if(recipe.dimensions.size())
+    {
+        trainer.set_dimensions(recipe.dimensions);
+        trainer.set_cascade_depth(recipe.dimensions.size());
+    }
+    trainer.set_ellipse_count(recipe.ellipse_count);
+    trainer.set_do_npd(recipe.npd);
+    trainer.set_do_affine(recipe.do_affine);
+    trainer.set_roi(roi);
+    trainer.set_do_line_indexed(recipe.do_interpolate);
+    
+    trainer.set_num_threads(8);
+    
     if(do_verbose)
     {
         trainer.be_verbose();
     }
 
     int max_dim = faces_train[0][0].num_parts() * 2;
-    for(const auto &dim : dimensions)
+    for(const auto &dim : recipe.dimensions)
     {
         CV_Assert(0 < dim && dim <= max_dim);
     }
 
     if(do_verbose)
     {
-        logger->info() << "Begin training...";
+        logger->info("Begin training...");
     }
 
+    std::map<int, float> weights;
+    for(const auto &w : recipe.weights)
+    {
+        weights[std::stoi(w.first)] = w.second;
+    }
+    
     //_SP::shape_predictor sp;
-    _SP::shape_predictor sp = trainer.train(images_train, faces_train, dimensions, ellipse_count, npd, do_affine, roi, do_interpolate);
-
+    _SP::shape_predictor sp = trainer.train(images_train, faces_train, weights);
     if(do_verbose)
     {
-        logger->info() << "Done training...";
+        logger->info("Done training...");
     }
 
     // Finally, we save the model to disk so we can use it later.
@@ -237,15 +277,15 @@ int gauze_main(int argc, char* argv[])
 
     if(do_verbose)
     {
-        logger->info() << "Saving to ..." << sModel;
+        logger->info("Saving to ...{}", sModel);
     }
     
-    save_pba_z(sModel, sp);
+    save_cpb(sModel, sp);
     sp.populate_f16(); // populate half precision leaf nodes
 
     if(do_verbose)
     {
-        logger->info() << "Done saving ..." << sModel;
+        logger->info("Done saving ...{}", sModel);
     }
 
     auto train_iod = get_interocular_distances(faces_train);
@@ -253,7 +293,7 @@ int gauze_main(int argc, char* argv[])
     
     if(do_verbose)
     {
-        logger->info() << "Mean training error: " << training_error;
+        logger->info("Mean training error: {}", training_error);
     }
 
     if(!sTest.empty())
@@ -265,7 +305,7 @@ int gauze_main(int argc, char* argv[])
         
         if(do_verbose)
         {
-            logger->info() << "Mean testing error:  " << test_error;
+            logger->info("Mean testing error: {}", test_error);
         }
     }
 
@@ -423,23 +463,6 @@ static void reduce_images(DlibImageArray &images_train, DlibObjectSet &faces_tra
     }
 }
 
-static std::vector<int> parse_dimensions(const std::string &str)
-{
-    std::vector<int> dimensions;
-    
-    if(!str.empty())
-    {
-        std::vector<std::string> tokens;
-        drishti::core::tokenize(str, tokens);
-        for(auto &token : tokens)
-        {
-            dimensions.push_back(std::stoi(token));
-        }
-    }
-    
-    return dimensions;
-}
-
 static dlib::rectangle parse_roi(const std::string &str)
 {
     std::vector<std::string> tokens;
@@ -450,5 +473,3 @@ static dlib::rectangle parse_roi(const std::string &str)
     float b = std::stof(tokens[3]);
     return dlib::drectangle(l, t, r-l, b-t);
 }
-
-

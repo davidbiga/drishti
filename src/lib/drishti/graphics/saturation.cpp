@@ -1,4 +1,4 @@
-/*!
+/*! -*-c++-*-
   @file   saturation.cpp
   @author David Hirvonen (C++ implementation)
   @brief Implementation of ogles_gpgpu shader for saturation.
@@ -15,12 +15,11 @@
 
 // clang-format off
 BEGIN_OGLES_GPGPU
-const char * SaturationProc::fshaderSaturationSrc = OG_TO_STR
-(
+const char * SaturationProc::fshaderSaturationSrc = 
 #if defined(OGLES_GPGPU_OPENGLES)
- precision mediump float;
+OG_TO_STR(precision mediump float;)
 #endif
- 
+OG_TO_STR(
  const float sqrt3 = 1.7320508075;
  
  varying vec2 vTexCoord;

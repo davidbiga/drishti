@@ -34,55 +34,93 @@
 ****************************************************************************/
 
 #include <cassert> // assert
-
 #include <QGuiApplication>
-#include <QQuickView>
 #include <QQuickItem>
-#include <QtPlugin> // Q_IMPORT_PLUGIN
 #include <QQmlExtensionPlugin>
-#include <QtOpenGL/QGLFormat>
 #include <QFile>
 #include <QTextStream>
 #include <QDirIterator>
 #include <QCameraExposure>
 
-#include "QMLCameraManager.h"
+// Includes 'glew.h' {
 #include "VideoFilterRunnable.hpp"
+// }
+
+// Includes 'gl2.h', after 'glew.h' {
+#include <QQuickView>
+#include <QtOpenGL/QGLFormat>
+
+#if QT_VERSION >= QT_VERSION_CHECK(5, 6, 0)
+#include <QOpenGLExtraFunctions>
+#endif
+// }
+
+#include "GLVersion.h"
+#include "QMLCameraManager.h"
 #include "VideoFilter.hpp"
 #include "InfoFilter.hpp"
 #include "QTRenderGL.hpp"
 #include "FrameHandler.h"
 #include "QtStream.h"
 #include "QtFaceMonitor.h"
+#include "CameraListener.h"
 
 #include "drishti/core/Logger.h"
 #include "drishti/core/drishti_core.h"
-#include "nlohmann_json.hpp" // nlohman-json + ANDROID stdlib patch
 
 #include <iostream>
 
-#if defined(Q_OS_OSX)
-Q_IMPORT_PLUGIN(QtQuick2Plugin);
-Q_IMPORT_PLUGIN(QMultimediaDeclarativeModule);
-#endif
-
 // Utilities
 static void printResources();
-static nlohmann::json loadJSON(spdlog::logger& logger);
+
+std::shared_ptr<CameraListener>
+createCameraListener(QQuickItem* root, std::shared_ptr<spdlog::logger>& logger, const GLVersion& glVersion)
+{
+    // Manage the camera:
+    QObject* qmlCamera = root->findChild<QObject*>("CameraObject");
+    assert(qmlCamera != nullptr);
+    CV_Assert(qmlCamera != nullptr);
+
+    QCamera* camera = qvariant_cast<QCamera*>(qmlCamera->property("mediaObject"));
+    assert(camera != nullptr);
+    CV_Assert(camera != nullptr);
+
+    return std::make_shared<CameraListener>(camera, logger, glVersion);
+}
+
+static QSurfaceFormat createGLESSurfaceFormat(const GLVersion& glVersion)
+{
+    QSurfaceFormat format;
+    format.setSamples(4);
+    format.setDepthBufferSize(24);
+    format.setStencilBufferSize(8);
+    format.setVersion(glVersion.major, glVersion.minor);
+    return format;
+}
 
 int facefilter_main(int argc, char** argv, std::shared_ptr<spdlog::logger>& logger)
 {
 #ifdef Q_OS_WIN // avoid ANGLE on Windows
     QCoreApplication::setAttribute(Qt::AA_UseDesktopOpenGL);
+#elif defined(Q_OS_IOS) || defined(Q_OS_ANDROID)
+    QGuiApplication::setAttribute(Qt::AA_UseOpenGLES);
 #endif
 
+    // https://stackoverflow.com/questions/40385482/why-cant-i-use-opengl-es-3-0-in-qt
+    GLVersion glVersion{ 2, 0 };
+    bool usePBO = false;
+
+#if defined(QT_OPENGL_ES_3) && defined(DRISHTI_OPENGL_ES3)
+    glVersion.major = 3;
+    usePBO = true;
+#endif
+
+    QSurfaceFormat::setDefaultFormat(createGLESSurfaceFormat(glVersion));
+
     // ###### Instantiate logger ########
-    logger->info() << "Start";
+    logger->info("Start");
 
     printResources();
-
-    // JSON configuration
-    auto json = loadJSON(*logger);
 
     QGuiApplication app(argc, argv);
 
@@ -90,15 +128,8 @@ int facefilter_main(int argc, char** argv, std::shared_ptr<spdlog::logger>& logg
     qmlRegisterType<InfoFilter>("facefilter.test", 1, 0, "InfoFilter");
     qmlRegisterType<QTRenderGL>("OpenGLUnderQML", 1, 0, "QTRenderGL");
 
-#if defined(Q_OS_OSX)
-    qobject_cast<QQmlExtensionPlugin*>(qt_static_plugin_QtQuick2Plugin().instance())->registerTypes("QtQuick");
-    qobject_cast<QQmlExtensionPlugin*>(qt_static_plugin_QMultimediaDeclarativeModule().instance())->registerTypes("QtMultimedia");
-#endif
-
     QQuickView view;
-
     view.setSource(QUrl("qrc:///main.qml"));
-
     view.setResizeMode(QQuickView::SizeRootObjectToView);
 
 #if defined(Q_OS_OSX)
@@ -112,56 +143,46 @@ int facefilter_main(int argc, char** argv, std::shared_ptr<spdlog::logger>& logg
     format.setStencilBufferSize(8);
     view.setFormat(format);
 
-    logger->info() << "OpenGL Versions Supported: " << QGLFormat::openGLVersionFlags();
+    logger->info("OpenGL Versions Supported: {}", QGLFormat::openGLVersionFlags());
 #endif
 
     // Default camera on iOS is not setting good parameters by default
     QQuickItem* root = view.rootObject();
+    CV_Assert(root);
 
-    QObject* qmlVideoOutput = root->findChild<QObject*>("VideoOutput");
-    assert(qmlVideoOutput);
+    // Create a CameraListener in order to trigger instantiation of classes
+    // when the camera is in state QCamera::LoadedStatus.  The QML Android
+    // camera does not response to manual camera->load() calls.
+    // * QMLCameraManager : for camera customizations
+    // * FrameHandlerManager : for application specific settings (depends on camera "name")
+    auto listener = createCameraListener(root, logger, glVersion);
+    listener->setUsePBO(usePBO);
 
-    auto qmlCameraManager = QMLCameraManager::create(root, logger);
-    (void)qmlCameraManager->configure();
-
-    // ### Display the device/camera name:
-    logger->info() << "device: " << qmlCameraManager->getDeviceName();
-    logger->info() << "description: " << qmlCameraManager->getDescription();
-    logger->info() << "resolution: " << qmlCameraManager->getSize();
-
-    auto frameHandlers = FrameHandlerManager::get(&json, qmlCameraManager->getDeviceName(), qmlCameraManager->getDescription());
-    if (!frameHandlers || !frameHandlers->good())
-    {
-        logger->error() << "Failed to instantiate FrameHandlerManager";
-        return EXIT_FAILURE;
-    }
-
-    if (frameHandlers && qmlCameraManager)
-    {
-        frameHandlers->setOrientation(qmlCameraManager->getOrientation());
-        frameHandlers->setSize(qmlCameraManager->getSize());
-    }
+#if defined(Q_OS_IOS)
+    // On iOS we do not receive the
+    // * iOS does not receive QCamera::LoadedStatus, but we can configure the camera manually
+    // * Android does receive  QCamera::LoadedStatus,so we wait fot the signal
+    listener->configureCamera();
+#endif
 
     view.showFullScreen();
-
     return app.exec();
 }
 
 // QT uses a shared library for Android builds, so we must
 // explicitly export the main function for it to be loadable
 // with standard dlopen/dlsym pairs.
-#if defined(Q_OS_ANDROID)
-#include "facefilter_export.h"
-#define FACEFILTER_QT_EXPORT FACEFILTER_EXPORT
-#else
-#define FACEFILTER_QT_EXPORT
-#endif
 
-#if defined(Q_OS_IOS)
-extern "C" int qtmn(int argc, char** argv)
+// clang-format off
+#if defined(Q_OS_ANDROID)
+#  include "facefilter_export.h"
+#  define FACEFILTER_QT_EXPORT FACEFILTER_EXPORT
 #else
-extern "C" FACEFILTER_QT_EXPORT int main(int argc, char** argv)
+#  define FACEFILTER_QT_EXPORT
 #endif
+// clang-format on
+
+extern "C" FACEFILTER_QT_EXPORT int main(int argc, char** argv)
 {
     auto logger = drishti::core::Logger::create("facefilter");
     try
@@ -170,12 +191,12 @@ extern "C" FACEFILTER_QT_EXPORT int main(int argc, char** argv)
     }
     catch (std::exception& exc)
     {
-        logger->error() << "Exception catched: " << exc.what();
+        logger->error("Exception caught: {}", exc.what());
         return EXIT_FAILURE;
     }
     catch (...)
     {
-        logger->error() << "Unknown exception catched";
+        logger->error("Unknown exception caught");
         return EXIT_FAILURE;
     }
     return 0;
@@ -188,27 +209,4 @@ static void printResources()
     {
         qDebug() << it.next();
     }
-}
-
-static nlohmann::json loadJSON(spdlog::logger& logger)
-{
-    nlohmann::json json;
-
-    QString inputFilename(":/facefilter.json");
-
-    {
-        QFile inputFile(inputFilename);
-        if (!inputFile.open(QIODevice::ReadOnly | QIODevice::Text))
-        {
-            logger.error() << "Can't open file";
-            return EXIT_FAILURE;
-        }
-
-        QTextStream in(&inputFile);
-        std::stringstream stream;
-        stream << in.readAll().toStdString();
-        stream >> json;
-    }
-
-    return json;
 }

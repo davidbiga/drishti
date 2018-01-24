@@ -1,4 +1,4 @@
-/*!
+/*! -*-c++-*-
   @file   face/gpu/FaceStabilizer.cpp
   @author David Hirvonen
   @brief Simple interface to stabilize the eyes (similarity transformation).
@@ -10,6 +10,7 @@
 
 #include "drishti/face/gpu/FaceStabilizer.h"
 #include "drishti/geometry/motion.h" // for transformation::
+#include "drishti/core/Shape.h"
 
 DRISHTI_FACE_NAMESPACE_BEGIN
 
@@ -21,7 +22,13 @@ FaceStabilizer::FaceStabilizer(const cv::Size& sizeOut)
 cv::Matx33f FaceStabilizer::stabilize(const drishti::face::FaceModel& face, const cv::Size& sizeOut, float span)
 {
     using PointPair = std::array<cv::Point2f, 2>;
-    const PointPair eyeCenters{ { face.eyeFullR->irisEllipse.center, face.eyeFullL->irisEllipse.center } };
+
+    PointPair eyeCenters{ { face.eyeFullR->irisEllipse.center, face.eyeFullL->irisEllipse.center } };
+    if (std::min(face.eyeFullR->openness(), face.eyeFullL->openness()) < 0.1f)
+    {
+        eyeCenters = { { core::centroid(face.eyeRight), core::centroid(face.eyeLeft) } };
+    }
+
     // clang-format off
     const PointPair screenCenters
     {{
@@ -36,10 +43,15 @@ std::array<eye::EyeWarp, 2>
 FaceStabilizer::renderEyes(const drishti::face::FaceModel& face, const cv::Size& sizeIn) const
 {
     using PointPair = std::array<cv::Point2f, 2>;
-    const PointPair eyeCenters{ { face.eyeFullR->irisEllipse.center, face.eyeFullL->irisEllipse.center } };
-    auto eyes = renderEyes(eyeCenters, sizeIn);
-    eyes[0].eye = face.eyeFullR;
-    eyes[1].eye = face.eyeFullL;
+
+    std::array<eye::EyeWarp, 2> eyes;
+    if (face.eyeFullR.has && face.eyeFullL.has)
+    {
+        const PointPair eyeCenters{ { face.eyeFullR->irisEllipse.center, face.eyeFullL->irisEllipse.center } };
+        eyes = renderEyes(eyeCenters, sizeIn);
+        eyes[0].eye = face.eyeFullR;
+        eyes[1].eye = face.eyeFullL;
+    }
 
     return eyes;
 }

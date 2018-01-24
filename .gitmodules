@@ -1,24 +1,6 @@
-[submodule "src/3rdparty/xgboost"]
-    path = src/3rdparty/xgboost
-    url = https://github.com/hunter-packages/xgboost.git
-[submodule "src/3rdparty/thread-pool-cpp"]
-    path = src/3rdparty/thread-pool-cpp
-    url = https://github.com/hunter-packages/thread-pool-cpp.git
-[submodule "src/3rdparty/ogles_gpgpu"]
-    path = src/3rdparty/ogles_gpgpu
-    url = https://github.com/hunter-packages/ogles_gpgpu.git
 [submodule "drishti-upload"]
     path = drishti-upload
     url = https://github.com/elucideye/drishti-upload
-[submodule "src/3rdparty/polly"]
-    path = src/3rdparty/polly
-    url = https://github.com/elucideye/polly.git
 [submodule "src/3rdparty/imshow"]
     path = src/3rdparty/imshow
     url = https://github.com/hunter-packages/imshow.git
-[submodule "src/3rdparty/boost-pba"]
-    path = src/3rdparty/boost-pba
-    url = https://github.com/hunter-packages/boost-pba
-[submodule "src/3rdparty/glfm"]
-	path = src/3rdparty/glfm
-	url = https://github.com/hunter-packages/glfm.git

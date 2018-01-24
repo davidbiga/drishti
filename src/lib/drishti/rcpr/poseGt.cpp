@@ -1,4 +1,4 @@
-/*!
+/*! -*-c++-*-
   @file   poseGt.cpp
   @author David Hirvonen (C++ implementation (gradient boosting trees))
   @author P. Dollár (original matlab code (random ferns))
@@ -22,7 +22,7 @@
 DRISHTI_RCPR_NAMESPACE_BEGIN
 
 static Matx33Real getPose(const Vector1d& phi);
-static std::vector<uint32_t> xsToInds(const Matx33Real& HS, const PointVec& xs, int w, int h, int nChn, bool doTranspose, int stride);
+static std::vector<cv::Point2f> xsToPoints(const Matx33Real& HS, const PointVec& xs);
 
 // function part = createPart( parent, wts )
 // % Create single part for model (parent==0 implies root).
@@ -38,38 +38,36 @@ int createPart(int parent, CPR::Model::Parts& part)
 {
     CV_Assert(parent == 0); // for now, just one part
 
-    part.prn = { "prn", parent };
+    part.prn = parent;
     part.lks = {
-        "lks",
-        { static_cast<RealType>(0.0),
-            static_cast<RealType>(0.0),
-            static_cast<RealType>(0.0),
-            static_cast<RealType>(0.0),
-            static_cast<RealType>(1.0f) }
+        static_cast<RealType>(0.0),
+        static_cast<RealType>(0.0),
+        static_cast<RealType>(0.0),
+        static_cast<RealType>(0.0),
+        static_cast<RealType>(1.0f)
     };
     part.mus = {
-        "mus",
-        { static_cast<RealType>(100.0),
-            static_cast<RealType>(100.0),
-            static_cast<RealType>(0.0),
-            static_cast<RealType>(6.0),
-            static_cast<RealType>(-1.0) }
+        static_cast<RealType>(100.0),
+        static_cast<RealType>(100.0),
+        static_cast<RealType>(0.0),
+        static_cast<RealType>(6.0),
+        static_cast<RealType>(-1.0)
     };
+
     part.sigs = {
-        "sigs",
-        { static_cast<RealType>(10.0),
-            static_cast<RealType>(10.0),
-            static_cast<RealType>(M_PI),
-            static_cast<RealType>(0.5),
-            static_cast<RealType>(0.5) }
+        static_cast<RealType>(10.0),
+        static_cast<RealType>(10.0),
+        static_cast<RealType>(M_PI),
+        static_cast<RealType>(0.5),
+        static_cast<RealType>(0.5)
     };
+
     part.wts = {
-        "wts",
-        { static_cast<RealType>(0.313),
-            static_cast<RealType>(0.342),
-            static_cast<RealType>(11.339),
-            static_cast<RealType>(13.059),
-            static_cast<RealType>(48.0) }
+        static_cast<RealType>(0.313),
+        static_cast<RealType>(0.342),
+        static_cast<RealType>(11.339),
+        static_cast<RealType>(13.059),
+        static_cast<RealType>(48.0)
     };
 
     return 0;
@@ -79,7 +77,7 @@ int createModel(int type, CPR::Model& model)
 {
     CPR::Model::Parts parts;
     createPart(0, parts);
-    model.parts = { "parts", parts };
+    model.parts = parts;
     return 0;
 }
 
@@ -109,52 +107,43 @@ int createModel(int type, CPR::Model& model)
 // ########
 
 using FtrData = CPR::RegModel::Regs::FtrData;
-int featuresComp(const CPR::Model& model, const Vector1d& phi, const ImageMaskPair& Im, const FtrData& ftrData, CPR::FeaturesResult& result, bool useNPD)
+using FtrResult = CPR::FeaturesResult;
+int featuresComp(const CPR::Model& model, const Vector1d& phi, const ImageMaskPair& Im, const FtrData& ftrData, FtrResult& result, bool useNPD)
 {
     const auto& I = Im.getImage();
-    int h = I.rows;
-    int w = I.cols;
-    int stride = I.step1();
-    int nChn = I.channels();
+    CV_Assert(I.channels() == 1);
 
-    // compute image inds from xs adjusted for pose
+    // compute image coordinates from xs adjusted for pose
     Matx33Real HS = getPose(phi); // just single component model for now (don't need multiple parts)
-
     const auto& xs = *(ftrData.xs);
+    auto points = xsToPoints(HS, xs);
 
-    std::vector<cv::Point> pts;
-    auto&& inds = xsToInds(HS, xs, w, h, nChn, DRISHTI_CPR_TRANSPOSE, stride); // TODO: rowStride != cols
-
-#if DRISHTI_CPR_DO_FEATURE_MASK
-    const auto& M = Im.getMask();
-    auto& mask = result.ftrMask;
-#endif
-
-#if DRISHTI_CPR_DO_FTR_DEBUG
-    cv::Mat tmp1(M.size(), CV_8UC1, cv::Scalar::all(0)), tmp2 = tmp1.clone();
-#endif
-
-    // Compute features:
-    CV_Assert(!(inds.size() % 2));
-    auto& ftrs = result.ftrs;
-
-    int size = (w * h);
-    for (auto& i : inds)
+    // Make sure we avoid out of bounds pixels, somewhat arbitrarily
+    // we can just set these to the top left corner.
+    for (auto& p : points)
     {
-        i = std::max(std::min(int(i), int(size - 1)), 0);
+        if (!cv::Rect({ 0, 0 }, I.size()).contains(p))
+        {
+            p = { 0.f, 0.f };
+        }
     }
 
-    ftrs.resize(inds.size() / 2);
-    for (int j = 0, i = 0; i < inds.size(); j++, i += 2)
+    // Compute features:
+    CV_Assert(!(points.size() % 2));
+    auto& ftrs = result.ftrs;
+
+    ftrs.resize(points.size() / 2);
+    for (int j = 0, i = 0; i < points.size(); j++, i += 2)
     {
-        double f1 = double(I.ptr()[inds[i + 0]]) / 255.0;
-        double f2 = double(I.ptr()[inds[i + 1]]) / 255.0;
+        double f1 = static_cast<double>(I.at<std::uint8_t>(points[i + 0])) / 255.0;
+        double f2 = static_cast<double>(I.at<std::uint8_t>(points[i + 1])) / 255.0;
 
         double d;
         if (useNPD) // possibly use functor (opt)
         {
             double denom = (f1 + f2);
-            d = (denom > 0.0) ? ((f1 - f2) / denom) : 0.0; // NPD
+            //d = (denom > 0.0) ? ((f1 - f2) / denom) : 0.0; // NPD
+            d = (f1 - f2) / (denom + 1e-6f); // NPD
         }
         else
         {
@@ -165,37 +154,22 @@ int featuresComp(const CPR::Model& model, const Vector1d& phi, const ImageMaskPa
 
 #if DRISHTI_CPR_DO_FEATURE_MASK
         // Store occlusion estimate
-        // TODO: test impact of full and partial occlusion
+        auto& M = Im.getMask();
+        auto& mask = result.ftrMask;
         if (!M.empty())
         {
-            uint8_t m1 = M.ptr()[inds[i + 0]];
-            uint8_t m2 = M.ptr()[inds[i + 1]];
+            uint8_t m1 = M.at<std::uint8_t>(points[i + 0]);
+            uint8_t m2 = M.at<std::uint8_t>(points[i + 1]);
             uint8_t valid = m1 & m2;
             mask.push_back(valid);
 
             if (!valid)
             {
-                ftrs[j] = NAN;
+                ftrs[j] = NAN; // xgboost special value
             }
-
-#if DRISHTI_CPR_DO_FTR_DEBUG
-            m1 = m2 = 255;
-            tmp1.ptr()[inds[i + 0]] = 255 * int(m1 && m2);
-            tmp1.ptr()[inds[i + 1]] = 255 * int(m1 && m2);
-#endif
         }
 #endif
     }
-
-#if DRISHTI_CPR_DO_FTR_DEBUG
-    cv::imshow("tmp1", tmp1); // opt
-    cv::imshow("M", M);       // opt
-    cv::imshow("I", I);       // opt
-    cv::waitKey(0);           // opt
-#endif
-
-    // Create V for visualization:
-    // TODO
 
     return 0;
 }
@@ -249,10 +223,10 @@ int featuresComp(const CPR::Model& model, const Vector1d& phi, const ImageMaskPa
 int ftrsGen(const CPR::Model& model, const CPR::CprPrm::FtrPrm& ftrPrmIn, FtrData& ftrData, float lambda)
 {
     CPR::CprPrm::FtrPrm dfs, ftrPrm;
-    dfs.type = { "type", 2 };
-    dfs.F = { "F", 100 };
-    dfs.radius = { "radius", 2 };
-    dfs.nChn = { "nChn", 1 };
+    dfs.type = 2;
+    dfs.F = 100;
+    dfs.radius = 2;
+    dfs.nChn = 1;
 
     ftrPrm = ftrPrmIn;
     ftrPrm.merge(dfs, 1);
@@ -263,10 +237,9 @@ int ftrsGen(const CPR::Model& model, const CPR::CprPrm::FtrPrm& ftrPrmIn, FtrDat
     const auto& nChn = *(ftrPrm.nChn);
 
     int F1 = F * type;
-    //std::cout << *(ftrData.xs) << std::endl;
 
     // currently only one model part:
-    ftrData.xs = { "xs", PointVec() };
+    ftrData.xs = PointVec();
 
 #if DRISHTI_CPR_USE_FEATURE_SEPARATION_PRIOR
     // Generate a bunch of pixels:
@@ -330,15 +303,13 @@ int ftrsGen(const CPR::Model& model, const CPR::CprPrm::FtrPrm& ftrPrmIn, FtrDat
     }
 #endif
 
-    //std::cout << *(ftrData.xs) << std::endl;
-
     CV_Assert(nChn == 1); // for now just one channel
-    ftrData.type = { "type", type };
-    ftrData.F = { "F", F };
-    ftrData.nChn = { "nChn", nChn };
+    ftrData.type = type;
+    ftrData.F = F;
+    ftrData.nChn = nChn;
     if (ftrData.pids->empty())
     {
-        ftrData.pids = { "pids", { 0.0, RealType(F1) } };
+        ftrData.pids = { 0.0, RealType(F1) };
     }
 
     return 0;
@@ -363,40 +334,15 @@ static Matx33Real getPose(const Vector1d& phi)
     return HS;
 }
 
-// Note: Base 0 with transposed image (column major)
-static int index(RealType x, RealType y, int w, int h, int stride)
+static std::vector<cv::Point2f> xsToPoints(const Matx33Real& HS, const PointVec& xs)
 {
-#if DRISHTI_CPR_TRANSPOSE
-    RealType cs = std::max(RealType(1.0), std::min(RealType(h), RealType(x))); // note: tranpose
-    RealType rs = std::max(RealType(1.0), std::min(RealType(w), RealType(y)));
-    return (int(cs - 1.0 + 0.5) * w + int(rs + 0.5)) - 1; // base zero
-#else
-    return std::min(int(y + 0.5f), h - 1) * stride + std::min(int(x + 0.5f), w - 1);
-#endif
-}
-
-static std::vector<uint32_t> xsToInds(const Matx33Real& HS, const PointVec& xs, int w, int h, int nChn, bool doTranspose, int stride)
-{
-    CV_Assert(nChn == 1);
-
-#if DRISHTI_CPR_DO_LEAN
-    int n = xs.size();
-#else
-    int n = xs.rows;
-#endif
-
-    std::vector<uint32_t> inds(n);
-    for (int i = 0; i < inds.size(); i++)
+    std::vector<cv::Point2f> points(xs.size());
+    for (int i = 0; i < points.size(); i++)
     {
-#if DRISHTI_CPR_DO_LEAN
-        cv::Vec<RealType, 2> p = xs[i];
-#else
-        cv::Vec<RealType, 2> p = xs.at<cv::Vec<RealType, 2>>(i, 0);
-#endif
-        cv::Point3_<RealType> q = HS * cv::Point3_<RealType>(p[0], p[1], RealType(1.0));
-        inds[i] = index(q.x, q.y, w, h, stride);
+        const auto q = HS * cv::Point3f(xs[i].x, xs[i].y, 1.f);
+        points[i] = { q.x, q.y }; // pure affine (i.e., no /z)
     }
-    return inds;
+    return points;
 }
 
 Vector1d identity(const CPR::Model& model)
@@ -624,24 +570,16 @@ Vector1d ellipseToPhi(const cv::RotatedRect& e)
 }
 
 // Note: This is for ellipse drawn in transposed image
-cv::RotatedRect phiToEllipse(const Vector1d& phi, bool transpose)
+cv::RotatedRect phiToEllipse(const Vector1d& phi)
 {
     double width = std::pow(2.0, phi[3]);
     cv::Size2f size(width, std::pow(2.0, phi[4]) * width);
     cv::RotatedRect ellipse(cv::Point2f(phi[0], phi[1]), size, phi[2] * 180.0 / M_PI);
-
-    if (transpose)
-    {
-        // Be explicit and apply transpose here:
-        std::swap(ellipse.center.x, ellipse.center.y);
-        ellipse.angle = atan2(std::cos(phi[2]), std::sin(phi[2])) * 180.0 / M_PI;
-    }
-
     return ellipse;
 }
 
 #if !DRISHTI_BUILD_MIN_SIZE
-void drawFeatures(cv::Mat& canvas, const PointVec& xs, const Vector1d& phi, const std::vector<int>& features, float scale, bool doTranspose)
+void drawFeatures(cv::Mat& canvas, const PointVec& xs, const Vector1d& phi, const std::vector<int>& features, float scale)
 {
     // Draw the feature pairs
     if (scale != 1.f)
@@ -659,24 +597,13 @@ void drawFeatures(cv::Mat& canvas, const PointVec& xs, const Vector1d& phi, cons
         int k = (i * 2);
         cv::Scalar color(rng.uniform(0, 255), rng.uniform(0, 255), rng.uniform(0, 255));
 
-#if DRISHTI_CPR_DO_LEAN
         const cv::Vec<RealType, 2> p0 = xs[k + 0];
         const cv::Vec<RealType, 2> p1 = xs[k + 1];
-#else
-        cv::Vec<RealType, 2> p0 = xs.at<cv::Vec<RealType, 2>>(k + 0, 0);
-        cv::Vec<RealType, 2> p1 = xs.at<cv::Vec<RealType, 2>>(k + 1, 0);
-#endif
+
         cv::Point3_<RealType> q0 = (Hs * cv::Point3_<RealType>(p0[0], p0[1], 1.0)) * RealType(scale);
         cv::Point3_<RealType> q1 = (Hs * cv::Point3_<RealType>(p1[0], p1[1], 1.0)) * RealType(scale);
         cv::Point f0(q0.x, q0.y);
         cv::Point f1(q1.x, q1.y);
-
-        if (doTranspose)
-        {
-            std::swap(f0.x, f0.y);
-            std::swap(f1.x, f1.y);
-        }
-
         cv::circle(canvas, f0, 1, color, -1, 8);
         cv::circle(canvas, f1, 1, color, -1, 8);
         cv::line(canvas, f0, f1, color, 1, 8);

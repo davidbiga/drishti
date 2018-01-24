@@ -1,4 +1,4 @@
-/*!
+/*! -*-c++-*-
   @file   GazeEstimator.cpp
   @author David Hirvonen
   @brief  Internal implementation for a simple model based relative gaze estimation scheme.
@@ -14,12 +14,6 @@
 #include "drishti/ml/XGBooster.h"
 #include "drishti/geometry/Primitives.h"
 #include "drishti/geometry/motion.h"
-
-// clang-format off
-#if DRISHTI_SERIALIZE_WITH_BOOST
-#  include "drishti/core/boost_serialize_common.h"
-#endif
-// clang-format on
 
 #include <opencv2/core/core.hpp>
 #include <opencv2/video/video.hpp>

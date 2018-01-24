@@ -1,4 +1,4 @@
-/*!
+/*! -*-c++-*-
   @file   finder/FrameHandler.cpp
   @author David Hirvonen
   @brief Common state and stored frame handlers.
@@ -15,11 +15,16 @@
 #include "drishti/core/Logger.h"
 #include "drishti/core/make_unique.h"
 
+#include "nlohmann_json.hpp" // nlohman-json + ANDROID stdlib patch
+
 // clang-format off
 #if DRISHTI_USE_BEAST
 #  include "ImageLogger.h"
 #endif
 // clang-format on
+
+#include <QTextStream>
+#include <QFile>
 
 // Sample:
 //
@@ -39,23 +44,27 @@
 
 #define DRISHTI_STACK_LOGGING_DEMO 0
 
+std::unique_ptr<nlohmann::json> loadJSON(spdlog::logger& logger);
+
 FrameHandlerManager* FrameHandlerManager::m_instance = nullptr;
 
-FrameHandlerManager::FrameHandlerManager(Settings* settings, const std::string& name, const std::string& description)
-    : m_settings(settings)
+FrameHandlerManager::FrameHandlerManager(const std::string& name, const std::string& description, const GLVersion& glVersion)
+    : m_glVersion(glVersion)
 {
     m_logger = drishti::core::Logger::create("drishti");
-    m_logger->info() << "FaceFinder #################################################################";
+    m_logger->info("FrameHandlerManager #################################################################");
 
-    const auto& device = (*settings)[name];
+    m_settings = loadJSON(*m_logger);
+
+    const auto& device = (*m_settings)[name];
     if (device.empty())
     {
-        m_logger->error() << "Failure to parse settings for device:" << name;
+        m_logger->error("Failure to parse settings for device: {}", name);
         return;
     }
 
 #if DRISHTI_USE_BEAST
-    const auto& address = (*settings)["ipAddress"];
+    const auto& address = (*m_settings)["ipAddress"];
     if (!address.empty())
     {
         bool active = address["active"].get<bool>();
@@ -63,25 +72,45 @@ FrameHandlerManager::FrameHandlerManager(Settings* settings, const std::string& 
         {
             std::string host = address["host"];
             std::string port = address["port"];
+
+            float frequency = address["frequency"];
             m_imageLogger = std::make_shared<drishti::core::ImageLogger>(host, port);
+            m_imageLogger->setMaxFramesPerSecond(frequency); // throttle network traffic
         }
     }
 #endif
 
     // Parse detection parameters (minDepth, maxDepth)
-    m_detectionParams.m_minDepth = device["detectionRange"]["minDepth"];
-    m_detectionParams.m_maxDepth = device["detectionRange"]["maxDepth"];
+    const auto& detectionParams = (*m_settings)["detection"];
+    if (!detectionParams.empty())
+    {
+        m_detectionParams.m_minDepth = detectionParams["minDepth"];
+        m_detectionParams.m_maxDepth = detectionParams["maxDepth"];
+        m_detectionParams.m_interval = detectionParams["interval"];
+        m_detectionParams.m_singleFace = detectionParams["singleFace"];
+        m_detectionParams.m_minTrackHits = detectionParams["minTrackHits"];
+        m_detectionParams.m_maxTrackMisses = detectionParams["maxTrackMisses"];
+        m_detectionParams.m_minSeparation = detectionParams["minSeparation"];
+    }
 
     const auto& sensor = device["sensor"];
     const auto& intrinsic = sensor["intrinsic"];
 
     cv::Size size;
-    size.width = intrinsic["size"]["width"].get<int>();
-    size.height = intrinsic["size"]["height"].get<int>();
+    const auto& sizeParams = intrinsic["size"];
+    if (!sizeParams.empty())
+    {
+        size.width = sizeParams["width"].get<int>();
+        size.height = sizeParams["height"].get<int>();
+    }
 
     cv::Point2f p;
-    p.x = intrinsic["principal"]["x"].get<float>();
-    p.y = intrinsic["principal"]["y"].get<float>();
+    const auto& principalParams = intrinsic["principal"];
+    if (!principalParams.empty())
+    {
+        p.x = principalParams["x"].get<float>();
+        p.y = principalParams["y"].get<float>();
+    }
 
     const auto fx = intrinsic["focal_length_x"].get<float>();
 
@@ -117,15 +146,28 @@ auto FrameHandlerManager::createAsynchronousImageLogger() -> FrameHandler
         return nullptr;
     }
 
-    std::function<void(const cv::Mat&)> logger = [&](const cv::Mat& image) {
-        if (m_imageLogger)
+    // clang-format off
+    std::function<void(const cv::Mat&)> logger = [this](const cv::Mat& image)
+    {
+        if (m_imageLogger && !image.empty())
         {
-            m_threads->post([&]() {
-                m_logger->info() << "Logging: " << m_imageLogger->host() << ":" << m_imageLogger->port();
-                (*m_imageLogger)(image);
-            });
+            cv::Mat payload = image; // need to make a handle in this lambda
+            std::function<void()> worker = [this,payload]()
+            {
+                try
+                {
+                    m_logger->info("Logging: {} : {} [{}x{}]", m_imageLogger->host(), m_imageLogger->port(), payload.cols, payload.rows);
+                    (*m_imageLogger)(payload);
+                }
+                catch(std::exception &e)
+                {
+                    m_logger->error("facefilter: network error {}", e.what());
+                }
+            };
+            m_threads->post(worker);
         }
     };
+    // clang-format on
 
     return logger;
 #else
@@ -147,11 +189,42 @@ cv::Size FrameHandlerManager::getSize() const
 }
 
 FrameHandlerManager*
-FrameHandlerManager::get(nlohmann::json* settings, const std::string& name, const std::string& description)
+FrameHandlerManager::get(const std::string& name, const std::string& description, const GLVersion& glVersion)
 {
     if (!m_instance)
     {
-        m_instance = new FrameHandlerManager(settings, name, description);
+        m_instance = new FrameHandlerManager(name, description, glVersion);
     }
     return m_instance;
+}
+
+//////
+
+std::unique_ptr<nlohmann::json> loadJSON(spdlog::logger& logger)
+{
+    std::unique_ptr<nlohmann::json> json;
+
+    QString inputFilename(":/facefilter.json");
+    QFile inputFile(inputFilename);
+    if (!inputFile.open(QIODevice::ReadOnly | QIODevice::Text))
+    {
+        logger.error("Can't open file");
+        throw std::runtime_error("loadJSON: Can't open file");
+    }
+
+    QTextStream in(&inputFile);
+    if (in.status() == QTextStream::Ok)
+    {
+        std::stringstream stream;
+        stream << in.readAll().toStdString();
+
+        json = drishti::core::make_unique<nlohmann::json>();
+        stream >> (*json);
+    }
+    else
+    {
+        throw std::runtime_error("loadJSON: Can't read file");
+    }
+
+    return json;
 }

@@ -1,4 +1,4 @@
-/*!
+/*! -*-c++-*-
   @file   ObjectDetector.cpp
   @author David Hirvonen
   @brief  Internal ObjectDetector abstract API implementation file (high level routines).
@@ -13,7 +13,29 @@
 #include "drishti/ml/drishti_ml.h"
 #include "drishti/ml/ObjectDetector.h"
 
+#include <iostream>
+
 DRISHTI_ML_NAMESPACE_BEGIN
+
+void ObjectDetector::setMaxDetectionCount(size_t maxCount)
+{
+    m_maxDetectionCount = maxCount;
+}
+
+void ObjectDetector::setDoNonMaximaSuppression(bool flag)
+{
+    m_doNms = flag;
+}
+
+bool ObjectDetector::getDoNonMaximaSuppression() const
+{
+    return m_doNms;
+}
+
+void ObjectDetector::setDetectionScorePruneRatio(double ratio)
+{
+    m_detectionScorePruneRatio = ratio;
+}
 
 void ObjectDetector::prune(std::vector<cv::Rect>& objects, std::vector<double>& scores)
 {
@@ -25,7 +47,7 @@ void ObjectDetector::prune(std::vector<cv::Rect>& objects, std::vector<double>& 
         int cutoff = 1;
         for (int i = 1; i < std::min(m_maxDetectionCount, objects.size()); i++)
         {
-            cutoff = i;
+            cutoff = i + 1;
             if (scores[i] < (scores[0] * m_detectionScorePruneRatio))
             {
                 break;

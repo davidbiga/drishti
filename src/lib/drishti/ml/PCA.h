@@ -1,4 +1,4 @@
-/*!
+/*! -*-c++-*-
   @file   PCA.h
   @author David Hirvonen
   @brief  Internal PCA class declaration.
@@ -14,12 +14,6 @@
 #include "drishti/core/drishti_core.h"
 #include "drishti/ml/drishti_ml.h"
 
-// clang-format off
-#if DRISHTI_SERIALIZE_WITH_BOOST
-#  include "drishti/core/drishti_serialization_boost.h" // for export
-#endif
-// clang-format on
-
 #include <opencv2/core/core.hpp>
 
 #include <memory>
@@ -33,9 +27,9 @@ public:
     {
         Standardizer();
         Standardizer(int size, int type);
+        ~Standardizer();
         void create(int size, int type);
-
-        void compute(const cv::Mat& src);
+        void compute(const cv::Mat& src, const cv::Mat &columnWeights={});
         cv::Mat standardize(const cv::Mat& src) const;
         cv::Mat unstandardize(const cv::Mat& src) const;
 
@@ -46,8 +40,9 @@ public:
     };
 
     StandardizedPCA(); // null constructor for file loading
-    void compute(const cv::Mat& data, cv::Mat& projection, float retainedVariance);
-    void compute(const cv::Mat& data, cv::Mat& projection, int maxComponents);
+    ~StandardizedPCA();
+    void compute(const cv::Mat& data, cv::Mat& projection, float retainedVariance, const cv::Mat &columnWeights={});
+    void compute(const cv::Mat& data, cv::Mat& projection, int maxComponents, const cv::Mat &columnWeights={});
     void init();
 
     size_t getNumComponents() const;
@@ -66,15 +61,11 @@ public:
 
 protected:
     Standardizer m_transform;
-    std::shared_ptr<cv::PCA> m_pca;
+    std::unique_ptr<cv::PCA> m_pca;
 
     cv::Mat m_eT; // transposed eigenvectors
 };
 
 DRISHTI_ML_NAMESPACE_END
-
-#if DRISHTI_SERIALIZE_WITH_BOOST
-BOOST_CLASS_EXPORT_KEY(drishti::ml::StandardizedPCA); // (optional)
-#endif
 
 #endif // __drishti_ml_PCA_h__

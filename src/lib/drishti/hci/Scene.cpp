@@ -1,4 +1,4 @@
-/*!
+/*! -*-c++-*-
   @file   finder/Scene.cpp
   @author David Hirvonen
   @brief  Scene viewed by the camera represented by low level primitives: (corners, face, flow, etc.)
@@ -151,7 +151,7 @@ void rectanglesToDrawings(const std::vector<cv::Rect>& rectangles, LineDrawingVe
 
 void faceToDrawing(const drishti::face::FaceModel& face, ogles_gpgpu::LineDrawing& drawing)
 {
-    auto parts = face.getFaceParts(true);
+    auto parts = face.getFaceParts(true, false);
     drawing.strip = true; // STRIP == TRUE
     drawing.roi = face.roi;
     for (int i = 0; i < parts.size(); i++)

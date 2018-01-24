@@ -1,4 +1,4 @@
-/*!
+/*! -*-c++-*-
   @file   EyeModelPupil.cpp
   @author David Hirvonen
   @brief  Implemenation of pupile specific eye model estimation.
@@ -12,6 +12,8 @@
 */
 
 #include "drishti/eye/EyeModelEstimatorImpl.h"
+
+#include "drishti/rcpr/CPR.h"
 
 #define DEBUG_PUPIL 0
 

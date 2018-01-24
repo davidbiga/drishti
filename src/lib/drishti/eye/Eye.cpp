@@ -1,4 +1,4 @@
-/*!
+/*! -*-c++-*-
   @file   Eye.cpp
   @author David Hirvonen
   @brief  Internal utility eye model class declaration.
@@ -41,6 +41,9 @@ DRISHTI_EYE_NAMESPACE_BEGIN
 typedef std::vector<cv::Point2f> PointVec;
 static std::vector<PointVec> ellipseToContours(const cv::RotatedRect& ellipse, const PointVec& eyelids = {});
 static void fillPolly(cv::Mat& image, const PointVec& polly, const cv::Scalar& value);
+
+EyeModel::EyeModel() = default;
+EyeModel::~EyeModel() = default;
 
 std::vector<cv::Point2f> EyeModel::getUpperEyelid() const
 {
@@ -141,6 +144,12 @@ void EyeModel::refine(int eyelidPoints, int creasePoints)
             crease = creaseSpline;
         }
     }
+
+    cv::Point2f irisCenter_, irisInner_, irisOuter_;
+    estimateIrisLandmarks(irisCenter_, irisInner_, irisOuter_);
+    irisCenter = irisCenter_;
+    irisInner = irisInner_;
+    irisOuter = irisOuter_;
 }
 
 void EyeModel::normalizeEllipse(cv::RotatedRect& ellipse)
@@ -292,6 +301,7 @@ std::vector<std::vector<cv::Point2f>> EyeModel::getContours(bool doPupil) const
     std::vector<std::vector<cv::Point2f>> contours;
 
     contours.push_back(eyelidsSpline);
+    contours.back().push_back(eyelids.front()); // closed contour
 
     if (irisEllipse.size.width)
     {
@@ -392,7 +402,6 @@ void EyeModel::flop(int width)
 
 void EyeModel::draw(cv::Mat& canvas, int level, bool doMask, const cv::Scalar& color, int width) const
 {
-#if !DRISHTI_BUILD_MIN_SIZE
     CV_Assert(canvas.type() == CV_8UC3 || canvas.type() == CV_8UC4);
     if (eyelids.size() < 3)
     {
@@ -420,6 +429,7 @@ void EyeModel::draw(cv::Mat& canvas, int level, bool doMask, const cv::Scalar& c
     if (eyelidsSpline.size())
     {
         std::copy(eyelidsSpline.begin(), eyelidsSpline.end(), std::back_inserter(contours[0]));
+        contours[0].push_back(contours[0].front()); // closed contour
         cv::polylines(canvas, contours, true, color, width, 8);
     }
 
@@ -450,10 +460,6 @@ void EyeModel::draw(cv::Mat& canvas, int level, bool doMask, const cv::Scalar& c
     const cv::Point2f* pI = reinterpret_cast<const cv::Point2f*>(&initial_shape_ref(0, 0));
     for (int i = 0; i < n; i++)
         cv::circle(canvas, cv::Point2f(pI[i].x * image.cols, pI[i].y * image.rows), 1, { 255, 0, 255 }, CV_AA);
-#endif
-
-#else
-    CV_Assert(false);
 #endif
 }
 

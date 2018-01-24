@@ -1,4 +1,4 @@
-/*!
+/*! -*-c++-*-
   @file   LazyParallelResource.h
   @author David Hirvonen
   @brief  Declaration of parallel_for abstraction classes
@@ -12,8 +12,10 @@
 #define __drishti_core_LazyParallelResource_h__
 
 #include "drishti/core/drishti_core.h"
+
 #include <functional>
 #include <map>
+#include <mutex>
 
 DRISHTI_CORE_NAMESPACE_BEGIN
 

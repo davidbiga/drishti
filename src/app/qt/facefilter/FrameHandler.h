@@ -1,4 +1,4 @@
-/*!
+/*! -*-c++-*-
   @file   finder/FrameHandler.h
   @author David Hirvonen
   @brief Common state and stored frame handlers.
@@ -19,6 +19,8 @@
 
 #include "nlohmann_json.hpp" // nlohman-json
 
+#include "GLVersion.h"
+
 #include <functional>
 #include <vector>
 #include <memory>
@@ -37,20 +39,35 @@ class FrameHandlerManager
 public:
     struct DetectionParams
     {
-        float m_minDepth; // meters
-        float m_maxDepth; // meters
+        float m_minDepth;      // meters
+        float m_maxDepth;      // meters
+        float m_interval;      // seconds
+        bool m_singleFace;     // single face (i.e., global NMS)
+        int m_minTrackHits;    // min hits for valid track
+        int m_maxTrackMisses;  // max misses for track termination
+        float m_minSeparation; // min separation for distinct object detection (meters)
     };
 
     using Settings = nlohmann::json;
     using FrameHandler = std::function<void(const cv::Mat&)>;
 
-    FrameHandlerManager(Settings* settings, const std::string& name, const std::string& description);
+    FrameHandlerManager(const std::string& name, const std::string& description, const GLVersion& glVersion);
 
     ~FrameHandlerManager();
 
     bool good() const;
 
-    static FrameHandlerManager* get(Settings* settings = nullptr, const std::string& name = {}, const std::string& description = {});
+    static FrameHandlerManager* get(const std::string& name = {}, const std::string& description = {}, const GLVersion& glVersion = {});
+
+    void setUsePBO(bool flag)
+    {
+        m_usePBO = flag;
+    }
+
+    bool getUsePBO()
+    {
+        return m_usePBO;
+    }
 
     int getOrientation() const
     {
@@ -105,6 +122,11 @@ public:
     }
 #endif
 
+    const GLVersion& getGLVersion() const
+    {
+        return m_glVersion;
+    }
+
     const DetectionParams& getDetectionParameters()
     {
         return m_detectionParams;
@@ -115,12 +137,17 @@ public:
         return m_faceMonitor.get();
     }
 
-    Settings* getSettings() { return m_settings; }
-    const Settings* getSettings() const { return m_settings; }
+    Settings* getSettings() { return m_settings.get(); }
+    const Settings* getSettings() const { return m_settings.get(); }
 
 protected:
-    Settings* m_settings = nullptr;
+    std::unique_ptr<Settings> m_settings;
+
     DetectionParams m_detectionParams;
+
+    GLVersion m_glVersion;
+
+    bool m_usePBO = false;
     int m_orientation = 0;
     std::string m_deviceName;
     std::string m_deviceDescription;

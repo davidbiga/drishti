@@ -1,4 +1,4 @@
-/*!
+/*! -*-c++-*-
   @file   FaceDetector.h
   @author David Hirvonen
   @brief  Internal declaration of a face trained object detector.
@@ -14,9 +14,10 @@
 #include "drishti/face/drishti_face.h"
 #include "drishti/face/FaceDetectorFactory.h"
 #include "drishti/core/Shape.h"
-#include "drishti/acf/MatP.h"
 #include "drishti/face/Face.h"
 #include "drishti/face/FaceIO.h"
+
+#include "acf/MatP.h"
 
 #include <opencv2/core/core.hpp>
 #include <opencv2/objdetect/objdetect.hpp>
@@ -73,6 +74,7 @@ public:
     typedef std::vector<cv::Point2f> Landmarks;
 
     FaceDetector(FaceDetectorFactory& Resources);
+    ~FaceDetector();
 
     void setLandmarkFormat(FaceSpecification::Format format);
 
@@ -99,7 +101,6 @@ public:
     void setFace2StagesHint(int stages);
     void setEyelidStagesHint(int stages);
     void setIrisStagesHint(int stages);
-    void setIrisStagesRepetitionFactor(int x);
 
     void setDoIrisRefinement(bool flag);
     void setDoEyeRefinement(bool flag);
@@ -118,7 +119,7 @@ public:
     virtual void refine(const PaddedImage& Ib, std::vector<FaceModel>& faces, const cv::Matx33f& H, bool isDetection);
 
 protected:
-    std::shared_ptr<Impl> m_impl; // make_unique<> errors
+    std::unique_ptr<Impl> m_impl;
 };
 
 void splitContour(const std::vector<cv::Point2f>& points, std::vector<std::vector<cv::Point2f>>& contours);

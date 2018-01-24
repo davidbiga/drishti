@@ -1,4 +1,4 @@
-/*!
+/*! -*-c++-*-
   @file   PCA.cpp
   @author David Hirvonen
   @brief  Internal PCA class implementation.
@@ -9,6 +9,7 @@
 */
 
 #include "drishti/ml/PCA.h"
+#include "drishti/core/make_unique.h"
 
 #include <Eigen/Dense>
 
@@ -16,7 +17,8 @@ DRISHTI_ML_NAMESPACE_BEGIN
 
 // ########## Scaling params ############
 
-StandardizedPCA::Standardizer::Standardizer() {}
+StandardizedPCA::Standardizer::Standardizer() = default;
+StandardizedPCA::Standardizer::~Standardizer() = default;
 StandardizedPCA::Standardizer::Standardizer(int size, int type)
 {
     create(size, type);
@@ -28,7 +30,7 @@ void StandardizedPCA::Standardizer::create(int size, int type)
     sigma.create(1, size, type);
 }
 
-void StandardizedPCA::Standardizer::compute(const cv::Mat& src)
+void StandardizedPCA::Standardizer::compute(const cv::Mat& src, const cv::Mat &columnWeights)
 {
     create(src.cols, CV_32FC1);
     float *pMu = mu.ptr<float>(), *pSigma = sigma.ptr<float>();
@@ -39,6 +41,12 @@ void StandardizedPCA::Standardizer::compute(const cv::Mat& src)
         cv::meanStdDev(x, mu, sigma);
         pMu[0] = mu[0];
         pSigma[0] = sigma[0];
+    }
+    
+    if(!columnWeights.empty())
+    {
+        CV_Assert(columnWeights.size().area() == sigma.size().area());
+        cv::divide(sigma, (sigma.cols == columnWeights.cols) ? columnWeights : columnWeights.t(), sigma);
     }
 }
 
@@ -82,30 +90,31 @@ cv::Mat StandardizedPCA::Standardizer::unstandardize(const cv::Mat& data) const
 
 // ########### ScalePCA #############
 
-StandardizedPCA::StandardizedPCA() {} // null constructor for file loading
+StandardizedPCA::StandardizedPCA() = default;
+StandardizedPCA::~StandardizedPCA() = default;
 
 size_t StandardizedPCA::getNumComponents() const
 {
     return m_transform.mu.cols;
 }
 
-void StandardizedPCA::compute(const cv::Mat& data, cv::Mat& projection, float retainedVariance)
+void StandardizedPCA::compute(const cv::Mat& data, cv::Mat& projection, float retainedVariance, const cv::Mat &columnWeights)
 {
     cv::Mat mu;
-    m_transform.compute(data);
+    m_transform.compute(data, columnWeights);
     cv::Mat data_ = m_transform.standardize(data);
-    m_pca = std::make_shared<cv::PCA>(data_, mu, cv::PCA::DATA_AS_ROW, retainedVariance);
+    m_pca = drishti::core::make_unique<cv::PCA>(data_, mu, cv::PCA::DATA_AS_ROW, retainedVariance);
     m_pca->project(data_, projection);
 
     init();
 }
 
-void StandardizedPCA::compute(const cv::Mat& data, cv::Mat& projection, int maxComponents)
+void StandardizedPCA::compute(const cv::Mat& data, cv::Mat& projection, int maxComponents, const cv::Mat &columnWeights)
 {
     cv::Mat mu;
-    m_transform.compute(data);
+    m_transform.compute(data, columnWeights);
     cv::Mat data_ = m_transform.standardize(data);
-    m_pca = std::make_shared<cv::PCA>(data_, mu, cv::PCA::DATA_AS_ROW, maxComponents);
+    m_pca = drishti::core::make_unique<cv::PCA>(data_, mu, cv::PCA::DATA_AS_ROW, maxComponents);
     m_pca->project(data_, projection);
 
     init();

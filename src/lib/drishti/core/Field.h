@@ -1,4 +1,4 @@
-/*!
+/*! -*-c++-*-
   @file   Field.h
   @author David Hirvonen
   @brief  Declaration of optional (de)serializable value
@@ -16,7 +16,8 @@
 
 #include "drishti/core/drishti_core.h"
 
-#include <opencv2/core.hpp>
+#include <string>
+#include <assert.h>
 
 DRISHTI_CORE_NAMESPACE_BEGIN
 
@@ -24,23 +25,35 @@ template <typename T>
 struct Field
 {
     Field()
+        : has(false)
     {
-        has = false;
     }
     Field(const T& t)
-        : value(t)
-        , has(true)
+        : has(true)
+        , value(t)
     {
     }
-    ~Field()
-    {
-    }
+    ~Field() = default;
 
     Field<T>& operator=(const T& src)
     {
         has = true;
         value = src;
         return *this;
+    }
+
+    void merge(const Field<T>& df, int checkExtra)
+    {
+        if (!has && df.has)
+        {
+            set(df.has, df.value);
+        }
+    }
+
+    void set(bool has_, const T& value_)
+    {
+        has = has_;
+        value = value_;
     }
 
     void clear()
@@ -50,7 +63,7 @@ struct Field
 
     operator T() const
     {
-        CV_Assert(has);
+        assert(has);
         return value;
     }
     const T& get() const
@@ -83,14 +96,12 @@ struct Field
     template <class Archive>
     void serialize(Archive& ar, const unsigned int version)
     {
-        //ar & GENERIC_NVP("has", has);
-        //ar & GENERIC_NVP("value", value);
         ar& has;
         ar& value;
     }
 
-    T value;
     bool has = false;
+    T value;
 };
 
 DRISHTI_CORE_NAMESPACE_END

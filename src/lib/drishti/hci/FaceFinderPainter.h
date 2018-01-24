@@ -1,4 +1,4 @@
-/*!
+/*! -*-c++-*-
   @file   drishti/hci/FaceFinderPainter.h
   @author David Hirvonen
   @brief  Face tracking class with OpenGL texture drawing
@@ -32,6 +32,12 @@ DRISHTI_HCI_NAMESPACE_BEGIN
 class FaceFinderPainter : public FaceFinder
 {
 public:
+    enum EffectKind
+    {
+        kWireframes,
+        kStabilize
+    };
+
     class Impl;
     using FaceFinderPtr = std::unique_ptr<FaceFinderPainter>;
     using FrameDelegate = std::function<void(const cv::Mat& ref)>;
@@ -50,10 +56,19 @@ public:
     void setShowDetectionScales(bool value);
     bool getShowDetectionScales() const;
 
+    void setEffectKind(EffectKind kind);
+    EffectKind getEffectKind() const;
+
 protected:
     virtual void initPainter(const cv::Size& inputSizeUp);
     virtual GLuint paint(const ScenePrimitives& scene, GLuint inputTexture);
 
+    GLuint filter(const ScenePrimitives& scene, GLuint inputTexture);
+
+    ogles_gpgpu::RenderOrientation m_outputOrientation = ogles_gpgpu::RenderOrientationStd;
+    EffectKind m_effect = kWireframes;
+    cv::Size m_inputSize;
+    cv::Size m_inputSizeUp;
     bool m_drawIris = false;
 
 #if DRISHTI_HCI_FACE_FINDER_PAINTER_SHOW_CIRCLE

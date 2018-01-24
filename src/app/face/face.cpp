@@ -1,4 +1,4 @@
-/*!
+/*! -*-c++-*-
   @file   face.cpp
   @author David Hirvonen
   @brief  Face detection and landmark estimation.
@@ -10,8 +10,6 @@
 
 // Local includes:
 #include "drishti/core/drishti_stdlib_string.h" // android workaround
-#include "drishti/acf/ACF.h"
-#include "drishti/face/FaceDetector.h"
 #include "drishti/core/LazyParallelResource.h"
 #include "drishti/core/Line.h"
 #include "drishti/core/Logger.h"
@@ -21,8 +19,14 @@
 #include "drishti/core/drishti_cv_cereal.h"
 #include "drishti/core/scope_guard.h"
 #include "drishti/testlib/drishti_cli.h"
+#include "drishti/face/FaceDetector.h"
+#include "drishti/face/FaceDetectorFactoryJson.h"
 #include "drishti/face/gpu/FaceStabilizer.h"
 #include "drishti/geometry/motion.h"
+#include "drishti/ml/ObjectDetector.h"
+#include "drishti/ml/ObjectDetectorACF.h"
+
+#include <acf/ACF.h>
 
 // clang-format off
 #if defined(DRISHTI_USE_IMSHOW)
@@ -37,6 +41,7 @@
 #include <opencv2/highgui.hpp>
 #include <cereal/archives/json.hpp>
 
+using drishti::face::FaceSpecification;
 using LoggerPtr = std::shared_ptr<spdlog::logger>;
 
 static cv::Mat
@@ -154,11 +159,13 @@ int gauze_main(int argc, char** argv)
     double cascCal = 0.0;
     int minWidth = -1; // minimum object width
 
-    // Full set of models must be specified:
-    std::string sFaceDetector;
-    std::string sFaceDetectorMean;
-    std::string sFaceRegressor;
-    std::string sEyeRegressor;
+    bool doInner = false;
+
+    // Use factory as container for CLI inputs:
+    std::string sFactory;
+    auto factory = std::make_shared<drishti::face::FaceDetectorFactory>();
+
+    float minZ = 0.1f, maxZ = 1.f;
 
     cxxopts::Options options("drishti-acf", "Command line interface for ACF object detection (see Piotr's toolbox)");
 
@@ -173,10 +180,14 @@ int gauze_main(int argc, char** argv)
         ("s,scale", "Scale term for detection->regression mapping", cxxopts::value<float>(scale))
 
         // Clasifier and regressor models:
-        ("D,detector", "Face detector model", cxxopts::value<std::string>(sFaceDetector))
-        ("M,mean", "Face detector mean", cxxopts::value<std::string>(sFaceDetectorMean))
-        ("R,regressor", "Face regressor", cxxopts::value<std::string>(sFaceRegressor))
-        ("E,eye", "Eye model", cxxopts::value<std::string>(sEyeRegressor))
+        ("D,detector", "Face detector model", cxxopts::value<std::string>(factory->sFaceDetector))
+        ("M,mean", "Face detector mean", cxxopts::value<std::string>(factory->sFaceDetectorMean))
+        ("R,regressor", "Face regressor", cxxopts::value<std::string>(factory->sFaceRegressor))
+        ("E,eye", "Eye model", cxxopts::value<std::string>(factory->sEyeRegressor))
+    
+        // ... factory can be used instead of D,M,R,E
+        ("F,factory", "Factory (json model zoo)", cxxopts::value<std::string>(sFactory))
+        ("inner", "Inner face landmakrs", cxxopts::value<bool>(doInner))
     
         // Output parameters:
         ("e,eyes", "Crop eyes", cxxopts::value<bool>(doEyes))
@@ -203,7 +214,7 @@ int gauze_main(int argc, char** argv)
     // ### Directory
     if (sOutput.empty())
     {
-        logger->error() << "Must specify output directory";
+        logger->error("Must specify output directory");
         return 1;
     }
 
@@ -214,28 +225,34 @@ int gauze_main(int argc, char** argv)
     }
     else
     {
-        logger->error() << "Specified directory " << sOutput << " does not exist or is not writeable";
+        logger->error("Specified directory {} does not exist or is not writeable", sOutput);
         return 1;
     }
 
     // ### Input
     if (sInput.empty())
     {
-        logger->error() << "Must specify input image or list of images";
+        logger->error("Must specify input image or list of images");
         return 1;
     }
     if (!drishti::cli::file::exists(sInput))
     {
-        logger->error() << "Specified input file does not exist or is not readable";
+        logger->error("Specified input file does not exist or is not readable");
         return 1;
     }
 
+    if (!sFactory.empty())
+    {
+        factory = std::make_shared<drishti::face::FaceDetectorFactoryJson>(sFactory);
+    }
+    factory->inner = doInner;
+
     // Check for valid models
     std::vector<std::pair<std::string, std::string>> config{
-        { sFaceDetector, "face-detector" },
-        { sFaceDetectorMean, "face-detector-mean" },
-        { sFaceRegressor, "face-regressor" },
-        { sEyeRegressor, "eye-regressor" }
+        { factory->sFaceDetector, "face-detector" },
+        { factory->sFaceDetectorMean, "face-detector-mean" },
+        { factory->sFaceRegressor, "face-regressor" },
+        { factory->sEyeRegressor, "eye-regressor" }
     };
 
     for (const auto& c : config)
@@ -258,30 +275,28 @@ int gauze_main(int argc, char** argv)
     // Allocate resource manager:
     using FaceDetectorPtr = std::unique_ptr<drishti::face::FaceDetector>;
     drishti::core::LazyParallelResource<std::thread::id, FaceDetectorPtr> manager = [&]() {
-        auto factory = std::make_shared<drishti::face::FaceDetectorFactory>();
-        factory->sFaceDetector = sFaceDetector;
-        factory->sFaceRegressors = { sFaceRegressor };
-        factory->sEyeRegressor = sEyeRegressor;
-        factory->sFaceDetectorMean = sFaceDetectorMean;
 
         FaceDetectorPtr detector = drishti::core::make_unique<drishti::face::FaceDetector>(*factory);
-        detector->setScaling(scale);
+
         if (detector)
         {
+            detector->setScaling(scale);
+            detector->setLandmarkFormat( factory->inner ? FaceSpecification::kibug68_inner : FaceSpecification::kibug68);
+            
             // Cofigure parameters:
             detector->setDoNMS(true);
             detector->setDoNMSGlobal(true);
 
-            auto acf = dynamic_cast<drishti::acf::Detector*>(detector->getDetector());
+            auto acf = dynamic_cast<drishti::ml::ObjectDetectorACF*>(detector->getDetector());
             if (acf && acf->good())
             {
                 // Cascade threhsold adjustment:
                 if (cascCal != 0.f)
                 {
-                    drishti::acf::Detector::Modify dflt;
+                    acf::Detector::Modify dflt;
                     dflt.cascThr = { "cascThr", -1.0 };
                     dflt.cascCal = { "cascCal", cascCal };
-                    acf->acfModify(dflt);
+                    acf->getDetector()->acfModify(dflt);
                 }
             }
             else
@@ -324,12 +339,12 @@ int gauze_main(int argc, char** argv)
                 std::string base = drishti::core::basename(frame.name);
                 std::string filename = sOutput + "/" + base;
 
-                logger->info() << ++total << "/" << video->count() << " " << filename << " = " << faces.size();
+                logger->info("{}/{} {} = {}", ++total, video->count(), filename, faces.size());
 
                 // Save detection results in JSON:
                 if (!writeAsJson(filename + ".json", faces))
                 {
-                    logger->error() << "Failed to write: " << filename << ".json";
+                    logger->error("Failed to write: {}.json", filename);
                 }
 
 #if defined(DRISHTI_USE_IMSHOW)
@@ -418,12 +433,12 @@ checkModel(LoggerPtr& logger, const std::string& sModel, const std::string& desc
 {
     if (sModel.empty())
     {
-        logger->error() << "Must specify valid model " << sModel;
+        logger->error("Must specify valid model {}", sModel);
         return 1;
     }
     if (!drishti::cli::file::exists(sModel))
     {
-        logger->error() << "Specified model file does not exist or is not readable";
+        logger->error("Specified model file does not exist or is not readable");
         return 1;
     }
     return 0;
@@ -455,12 +470,7 @@ writeAsJson(const std::string& filename, const std::vector<drishti::face::FaceMo
     {
         cereal::JSONOutputArchive oa(ofs);
         typedef decltype(oa) Archive; // needed by macro
-
-#if 0
-        oa << GENERIC_NVP("objects", faces);
-#else
-        std::cerr << "Must be implemented" << std::endl;
-#endif
+        oa << GENERIC_NVP("faces", faces);
     }
     return ofs.good();
 }
@@ -470,7 +480,7 @@ drawObjects(cv::Mat& canvas, const std::vector<drishti::face::FaceModel>& faces)
 {
     for (const auto& f : faces)
     {
-        f.draw(canvas, 2, true);
+        f.draw(canvas, 2, true, true);
     }
 }
 
